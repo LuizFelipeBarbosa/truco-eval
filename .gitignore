@@ -1,0 +1,10 @@
+.venv/
+vendor/
+runs/
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+.env
+.DS_Store
+*.whl

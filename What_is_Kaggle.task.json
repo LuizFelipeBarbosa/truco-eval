@@ -1,0 +1,6 @@
+{
+  "versionNumber": 1,
+  "name": "What is Kaggle?",
+  "description": "Does the LLM know what Kaggle is?",
+  "definition": "@kbench.task(name=\"What is Kaggle?\", description=\"Does the LLM know what Kaggle is?\")\ndef what_is_kaggle(llm) -> None:\n    response = llm.prompt(\"What is Kaggle?\")\n    kbench.assertions.assert_in(\"platform\", response.lower())\n"
+}

@@ -1,0 +1,35 @@
+[project]
+name = "truco-eval"
+version = "0.1.0"
+description = "Truco Paulista LLM-vs-LLM benchmark: standalone engine, Game Arena harness components, OpenRouter model layer"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "game_arena",
+    "absl-py>=2.1",
+    "requests>=2.31",
+    "tenacity>=8",
+]
+
+[dependency-groups]
+dev = [
+    "kaggle>=2.2.4",
+    "kaggle-benchmarks>=0.6.1",
+    "pytest>=8",
+]
+
+[tool.uv.sources]
+# Game Arena harness, used as a dependency (not forked). Pinned to a commit.
+game_arena = { git = "https://github.com/google-deepmind/game_arena", rev = "6ddcc7dac06321472f2f22fabdeceab97eebeb73" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["truco", "runner", "openrouter_model.py", "kbench_model.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
