@@ -8,3 +8,11 @@ __pycache__/
 .env
 .DS_Store
 *.whl
+
+# Local agent skills and Kaggle CLI scaffolding (kept on disk, not published)
+.agents/
+.claude/
+skills-lock.json
+kaggle_benchmarks_reference.md
+example_task.py
+What_is_Kaggle*.json
