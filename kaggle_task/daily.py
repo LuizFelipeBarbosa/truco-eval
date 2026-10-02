@@ -28,7 +28,6 @@ import datetime
 import fcntl
 import glob
 import json
-import math
 import os
 import re
 import shutil
@@ -218,11 +217,12 @@ def merge_all() -> None:
 
   dirs = sorted((d for d in glob.glob(os.path.join(RUNS, "kaggle_cheap_rr*")) if os.path.isdir(d)), key=order)
   merged: dict[tuple[str, str], dict[str, Any]] = {}
-  models = None
+  models: dict[str, dict[str, Any]] = {}
   for d in dirs:
     report = os.path.join(d, "truco_runs", "tournament.json")
     if os.path.exists(report):
-      models = json.load(open(report, encoding="utf-8"))["models"]
+      for m in json.load(open(report, encoding="utf-8"))["models"]:
+        models[m["display"]] = m
     for f in glob.glob(os.path.join(d, "truco_runs", "*", "*", "summary.json")):
       merged[(f.split("/")[-3], f.split("/")[-2])] = json.load(open(f, encoding="utf-8"))
   halves = collections.defaultdict(set)
@@ -231,20 +231,23 @@ def merge_all() -> None:
     halves[(pairing, seed)].add(half)
   balanced = [s for (pairing, match_id), s in merged.items()
               if halves[(pairing, match_id.split("_")[0])] == {"orig", "dup"}]
-  configs = [ModelConfig(**{k: v for k, v in m.items() if k != "display"}) for m in models]
+  configs = [ModelConfig(**{k: v for k, v in m.items() if k != "display"}) for m in models.values()]
   report = tournament.build_report(configs, balanced)
   with open(os.path.join(RUNS, "kaggle_cheap_rr_merged_tournament.json"), "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2, sort_keys=True, ensure_ascii=False)
   lines = [f"Merged Kaggle cheap round-robin, {now_iso()}: {len(balanced)} matches in complete "
            f"orig+dup pairs ({len(merged) - len(balanced)} unpaired excluded), runs: "
            f"{', '.join(os.path.basename(d) for d in dirs)}", "", tournament.format_report(report), "",
-           "Win rate 95% CI (normal approximation):"]
+           "Bootstrap 95% CIs (resampling (pairing, seed) units):"]
   for r in report["standings"]:
     n, w = r["matches"], r["wins"]
     if n:
-      p = w / n
-      se = math.sqrt(p * (1 - p) / n)
-      lines.append(f"  {r['model']:<22} {w}/{n} = {p:.3f}  [{p - 1.96 * se:.2f}, {p + 1.96 * se:.2f}]")
+      wr_lo, wr_hi = r["win_rate_ci"] or (float("nan"), float("nan"))
+      line = f"  {r['model']:<22} {w}/{n} = {w / n:.3f}  [{wr_lo:.2f}, {wr_hi:.2f}]"
+      if r["bt_elo"] is not None and r["bt_elo_ci"]:
+        lo, hi = r["bt_elo_ci"]
+        line += f"   BT Elo {r['bt_elo']:+.0f} [{lo:+.0f}, {hi:+.0f}]"
+      lines.append(line)
   with open(os.path.join(RUNS, "kaggle_cheap_rr_leaderboard.txt"), "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
   log(f"merged leaderboard: {len(balanced)} matches -> runs/kaggle_cheap_rr_leaderboard.txt")
