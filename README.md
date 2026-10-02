@@ -22,6 +22,10 @@ hosted on claude.ai and open only for people they have been shared with.
 | [Inside Truco Eval](https://claude.ai/artifact/PpCSejFFUEf8iPG1UJegRL) | Interactive, diagram-led explainer: the game, a step-through of one full hand (`seed0_orig`), the harness, and results of the 200-match run. Each figure can be copied as SVG. |
 | [Truco Eval Overview](https://claude.ai/artifact/T6VKyMp9hG5PUEn6LRRerf) | A doc with four tabs. **Overview**: project structure and how a run works. **Interview deep dive**: architecture, design trade-offs, limitations, rehearsal questions. **Potential vs efficiency**: quiz-style intelligence versus in-game efficiency, read through the 200-match `deepseek-v4.1-flash` vs `glm-5.3-flash` run (risk profiles, bluffing, reasoning-overflow failures, cost per win). **Play by play**: full replays of the demo matches. |
 
+A snapshot of Inside Truco Eval is kept in `docs/inside-truco-eval.html`. It is
+one self-contained file with its data embedded, so it opens in any browser.
+The hosted page is the live version; refresh the snapshot after editing it.
+
 The 200-match analysis is computed from the transcripts in
 `runs/flash200_full/` (git-ignored, not in this repository).
 
@@ -186,4 +190,5 @@ runner/           rules_text.py, prompts.py, render.py, parsers.py, sampler.py, 
                   config.py, match_log.py, match_runner.py, stats.py, replay.py, cli.py
 tests/            engine, model-layer (mock HTTP server), parser, sampler, orchestrator, CLI tests
 AMBIGUITIES.md    rule edge cases and the resolutions implemented
+docs/             inside-truco-eval.html, a standalone snapshot of the explainer page
 ```
