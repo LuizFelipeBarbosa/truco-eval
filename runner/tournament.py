@@ -10,8 +10,9 @@ import re
 import traceback
 from typing import Any, Callable, Sequence
 
+from runner import ratings
 from runner import stats as truco_stats
-from runner.config import MatchSpec, ModelConfig
+from runner.config import KIND_HEURISTIC, KIND_RANDOM, MatchSpec, ModelConfig
 from runner.match_runner import play_match
 
 
@@ -36,7 +37,7 @@ def preflight(models: Sequence[ModelConfig]) -> dict[str, str]:
 
   errors: dict[str, str] = {}
   for m in models:
-    if m.kind == "random":
+    if m.kind in (KIND_RANDOM, KIND_HEURISTIC):
       continue
     try:
       agent = m.build_agent()
@@ -138,6 +139,10 @@ def run_tournament(
 def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
                  failures: list[dict[str, str]] | None = None) -> dict[str, Any]:
   labels = [m.display for m in models]
+  extra = {s["team_config"][t]["display"] for s in summaries for t in ("A", "B")} - set(labels)
+  labels.extend(sorted(extra))
+  anchor = next((m.display for m in models if m.kind == KIND_HEURISTIC), None)
+  rat = ratings.compute_ratings(summaries, labels, anchor=anchor)
   by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
   for s in summaries:
     a, b = s["team_config"]["A"]["display"], s["team_config"]["B"]["display"]
@@ -151,11 +156,17 @@ def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
     head_to_head[x][y] = {"wins": wins_x, "matches": n, "win_rate": wins_x / n}
     head_to_head[y][x] = {"wins": n - wins_x, "matches": n, "win_rate": (n - wins_x) / n}
     pairing_stats[f"{x} vs {y}"] = truco_stats.aggregate(ss)
+  for x, row in head_to_head.items():
+    for y, cell in row.items():
+      cell.update(rat["head_to_head"].get(x, {}).get(y, {}))
   overall = truco_stats.aggregate(summaries)
   standings = []
   for l in labels:
     cfg = overall["configs"].get(l)
+    rm = rat["models"].get(l, {})
     standings.append({
+        **{k: rm.get(k) for k in ("bt_elo", "bt_elo_ci", "margin_strength",
+                                  "margin_strength_ci", "win_rate_ci")},
         "model": l,
         "matches": cfg["matches"] if cfg else 0,
         "wins": cfg["wins"] if cfg else 0,
@@ -164,8 +175,9 @@ def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
         "illegal_action_rate": cfg["illegal_action_rate"] if cfg else None,
         "cost_per_match_usd": cfg["estimated_cost_per_match_usd"] if cfg else None,
     })
-  standings.sort(key=lambda r: -(r["win_rate"] or 0))
+  standings.sort(key=lambda r: (r["bt_elo"] is None, -(r["bt_elo"] or 0), -(r["win_rate"] or 0)))
   return {
+      "ratings": rat,
       "models": [m.to_dict() for m in models],
       "matches_played": len(summaries),
       "standings": standings,
@@ -180,12 +192,27 @@ def format_report(report: dict[str, Any]) -> str:
   labels = [r["model"] for r in report["standings"]]
   w = max([len(l) for l in labels] + [8])
   lines = ["Standings (all matches):"]
-  lines.append(f"  {'model':<{w}}  matches  wins  win rate  pts/hand  illegal  $/match")
+  f = lambda v, fmt: ("n/a" if v is None else fmt.format(v))
+  ci = lambda v, fmt: ("n/a" if v is None else f"[{fmt.format(v[0])}, {fmt.format(v[1])}]")
+  lines.append(f"  {'model':<{w}}  matches  wins  win rate  win-rate 95% CI  BT Elo  BT 95% CI"
+               "          margin/pair  pts/hand  illegal  $/match")
   for r in report["standings"]:
-    f = lambda v, fmt: ("n/a" if v is None else fmt.format(v))
     lines.append(f"  {r['model']:<{w}}  {r['matches']:>7}  {r['wins']:>4}  {f(r['win_rate'], '{:8.3f}')}  "
+                 f"{ci(r.get('win_rate_ci'), '{:.2f}'):>14}  {f(r.get('bt_elo'), '{:+.0f}'):>6}  "
+                 f"{ci(r.get('bt_elo_ci'), '{:+.0f}'):>16}  {f(r.get('margin_strength'), '{:+.1f}'):>11}  "
                  f"{f(r['points_per_hand'], '{:8.3f}')}  {f(r['illegal_action_rate'], '{:7.3f}')}  "
                  f"{f(r['cost_per_match_usd'], '{:7.3f}')}")
+  rat = report.get("ratings")
+  if rat:
+    if rat["connected"]:
+      lines.append(
+          f"Ratings: Bradley–Terry Elo (anchor: {rat['anchor'] or 'mean of rated models'}, "
+          f"+{rat['prior_pseudo_wins']} pseudo-wins per side per pairing); 95% CIs from "
+          f"{rat['bootstrap']['resamples']} bootstrap resamples of (pairing, seed) units; "
+          f"margin = points per duplicate pair; {rat['unpaired_matches']} unpaired match(es) "
+          "excluded from margin.")
+    else:
+      lines.append("Ratings unavailable: comparison graph is disconnected.")
   lines.append("")
   lines.append("Head-to-head win rate (row beats column), matches in parentheses:")
   cw = max(w, 12)

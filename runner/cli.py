@@ -18,7 +18,7 @@ import traceback
 from typing import Any
 
 from runner import stats as truco_stats
-from runner.config import KIND_OPENROUTER, KIND_RANDOM, ModelConfig
+from runner.config import KIND_HEURISTIC, KIND_OPENROUTER, KIND_RANDOM, ModelConfig
 from runner.match_runner import make_spec, play_match
 from runner.replay import replay_file
 
@@ -37,6 +37,8 @@ def model_config_from_args(slug: str, options: str | None, provider: str | None,
                            max_reprompts: int, api_options: str | None) -> ModelConfig:
   if slug.lower() == "random":
     return ModelConfig(kind=KIND_RANDOM, label=label or "random", max_reprompts=max_reprompts)
+  if slug.lower() == "heuristic":
+    return ModelConfig(kind=KIND_HEURISTIC, label=label or "heuristic", max_reprompts=max_reprompts)
   return ModelConfig(
       kind=KIND_OPENROUTER, slug=slug, model_options=_json_arg(options) or {},
       provider=_json_arg(provider), label=label or "", base_url=base_url,
@@ -49,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
   sub = p.add_subparsers(dest="command", required=True)
 
   run = sub.add_parser("run", help="play seeded matches between two model configurations")
-  run.add_argument("--team-a", required=True, help="OpenRouter slug, or 'random'")
-  run.add_argument("--team-b", required=True, help="OpenRouter slug, or 'random'")
+  run.add_argument("--team-a", required=True, help="OpenRouter slug, 'random', or 'heuristic'")
+  run.add_argument("--team-b", required=True, help="OpenRouter slug, 'random', or 'heuristic'")
   for t in ("a", "b"):
     run.add_argument(f"--team-{t}-options", help="JSON dict or path: temperature, top_p, top_k, max_tokens, reasoning, ...")
     run.add_argument(f"--team-{t}-provider", help='JSON dict or path, e.g. {"order":["DeepInfra"],"allow_fallbacks":false}')
@@ -71,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 
   tr = sub.add_parser("tournament", help="round-robin: every pairing of the given models")
   tr.add_argument("--models-file", required=True,
-                  help='JSON list of {"slug","label","provider","model_options"} (slug "random" for a bot)')
+                  help='JSON list of {"slug","label","provider","model_options"} (slug "random" or "heuristic" for a bot)')
   tr.add_argument("--seeds", type=int, default=100)
   tr.add_argument("--start-seed", type=int, default=0)
   tr.add_argument("--duplicate", action=argparse.BooleanOptionalAction, default=True)
@@ -159,6 +161,9 @@ def cmd_tournament(args: argparse.Namespace) -> int:
     slug = e["slug"]
     if slug.lower() == "random":
       models.append(ModelConfig(kind=KIND_RANDOM, label=e.get("label", "random"),
+                                max_reprompts=args.max_reprompts))
+    elif slug.lower() == "heuristic":
+      models.append(ModelConfig(kind=KIND_HEURISTIC, label=e.get("label", "heuristic"),
                                 max_reprompts=args.max_reprompts))
     else:
       models.append(ModelConfig(kind=KIND_OPENROUTER, slug=slug, label=e.get("label", ""),

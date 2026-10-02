@@ -32,6 +32,8 @@ def test_run_tournament_report_and_resume(tmp_path):
   assert h["bot0"]["bot1"]["wins"] + h["bot1"]["bot0"]["wins"] == 4
   assert os.path.exists(os.path.join(str(tmp_path), "tournament.json"))
   assert "Head-to-head" in tournament.format_report(rep)
+  assert "ratings" in rep and all("bt_elo" in r for r in rep["standings"])
+  assert "BT Elo" in tournament.format_report(rep)
   # Resume: nothing is replayed, report is identical.
   calls.clear()
   rep2 = tournament.run_tournament(BOTS, seeds=[0, 1], out_root=str(tmp_path), duplicate=True,
@@ -42,6 +44,18 @@ def test_run_tournament_report_and_resume(tmp_path):
   tournament.run_tournament(BOTS, seeds=[0, 1, 2], out_root=str(tmp_path), duplicate=True,
                             progress=lambda m: None, play_fn=counting)
   assert sorted(set(calls)) == ["seed2_dup", "seed2_orig"] and len(calls) == 6
+
+
+def test_heuristic_anchors_ratings(tmp_path):
+  models = [ModelConfig(kind="heuristic"), ModelConfig(kind="random", label="r1"),
+            ModelConfig(kind="random", label="r2")]
+  rep = tournament.run_tournament(models, seeds=[0, 1, 2], out_root=str(tmp_path),
+                                  duplicate=True, progress=lambda m: None)
+  assert rep["ratings"]["anchor"] == "heuristic"
+  elo = {r["model"]: r["bt_elo"] for r in rep["standings"]}
+  assert elo["heuristic"] == 0
+  assert elo["r1"] < 0 and elo["r2"] < 0
+  assert rep["standings"][0]["model"] == "heuristic"
 
 
 def test_tournament_survives_failure(tmp_path):

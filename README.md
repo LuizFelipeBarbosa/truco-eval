@@ -78,6 +78,7 @@ Useful flags:
 | `--team-a-provider '{"order":["OpenAI"],"allow_fallbacks":false}'` | OpenRouter provider pinning, sent verbatim as the `provider` object. The provider that actually served each request is logged. |
 | `--team-a-label mini` | Display label in the stats table. |
 | `--team-a random` | A uniformly random legal-action bot instead of a model (deterministic, useful as a baseline and for reproducibility checks). |
+| `--team-a heuristic` | A deterministic rule-based baseline (fixed card-strength thresholds for playing, raising, answering calls and mão de onze) instead of a model. See below. |
 | `--seeds N --start-seed S` | Seeds `S .. S+N-1`. |
 | `--duplicate / --no-duplicate` | Also play each seed with the two configurations swapped across seats. Default on. |
 | `--num-players {2,4,6}` | Default 4. |
@@ -88,6 +89,19 @@ Useful flags:
 Both teams may use the same slug; the labels get `#A` / `#B` suffixes.
 
 A JSON argument may also be a path to a JSON file.
+
+### The heuristic baseline
+
+`heuristic` is a deterministic rule-based player that sees only what a model
+would see. It scores its hand (manilha 3, then 3 → 2, 2 → 1.5, A → 1, K → 0.5,
+plus or minus 2 per trick won or lost), calls and answers raises by comparing
+that score to fixed thresholds that rise with the stake, never folds
+voluntarily, plays the lowest card that wins the trick (or the lowest card when
+its partner is already winning), leads the middle card in trick 1 and its
+strongest later, and decides mão de onze from the average card value of its
+team's hands. The full rule list is the docstring of `runner/heuristic.py`. The
+thresholds are versioned: changing any of them changes the bot, and therefore
+the rating anchor of every result that includes it.
 
 ## Round-robin tournaments
 
@@ -102,9 +116,10 @@ uv run python -m runner.cli tournament --models-file models.json --seeds 100 --d
 ```
 
 `models.json` is a list of `{"slug", "label", "provider", "model_options"}`
-objects (`"slug": "random"` for the bot). A one-request preflight per model
-runs first. The report (`tournament.json` and the printed table) has standings
-over all matches and a head-to-head win-rate matrix.
+objects (`"slug": "random"` or `"slug": "heuristic"` for the bots). A
+one-request preflight per model (skipped for the bots) runs first. The report (`tournament.json` and the printed table) has standings
+over all matches with Bradley–Terry Elo ratings and bootstrap confidence intervals
+(see [Ratings](#ratings)), and a head-to-head win-rate matrix.
 
 ## Interpreting the outputs
 
@@ -127,6 +142,24 @@ fold was legal), raise call rate (per turn where a raise was legal), accept /
 decline / raise-back rates (per raise response), mão de onze forfeit rate, talk
 rate, tokens and requests per match, and cost per match from OpenRouter's
 reported `usage.cost` (n/a if any response lacked it).
+
+### Ratings
+
+Tournament standings are sorted by a Bradley–Terry Elo fitted on match wins,
+which corrects for unequal schedules (not every model plays every other).
+The anchor is the heuristic bot at 0 when it is in the tournament, otherwise the
+mean of the rated models; each played pairing adds +0.5 pseudo-wins per side so
+sweeps stay finite. Margin strength is a least-squares fit of points per
+duplicate pair (the orig and dup score margins summed). 95% CIs come from a
+1000-resample bootstrap that resamples (pairing, seed) units within each pairing
+and completeness stratum (orig and dup share deals, so they move together;
+complete/incomplete counts stay fixed so both comparison graphs are preserved),
+with a fixed RNG seed so reports are deterministic. A disconnected graph makes
+BT ratings unavailable, but does not suppress raw win-rate CIs. `tournament.json` holds these under `ratings`
+(method, anchor, connectivity, bootstrap settings, per-model fields), plus
+`bt_elo`, `bt_elo_ci`, `margin_strength`, `margin_strength_ci` and `win_rate_ci`
+on each standings row and `pairs`, `pair_margin_mean`, `pair_record` on each
+`head_to_head` cell.
 
 ### Auditing a prompt
 

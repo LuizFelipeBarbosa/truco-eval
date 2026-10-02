@@ -9,6 +9,7 @@ from runner import agents as truco_agents
 
 KIND_OPENROUTER = "openrouter"
 KIND_RANDOM = "random"
+KIND_HEURISTIC = "heuristic"
 KIND_KBENCH = "kbench"  # Kaggle Model Proxy, only inside kaggle_benchmarks
 
 
@@ -29,7 +30,9 @@ class ModelConfig:
   def display(self) -> str:
     if self.label:
       return self.label
-    return "random" if self.kind == KIND_RANDOM else self.slug
+    if self.kind in (KIND_RANDOM, KIND_HEURISTIC):
+      return self.kind
+    return self.slug
 
   def to_dict(self) -> dict[str, Any]:
     d = dataclasses.asdict(self)
@@ -42,6 +45,10 @@ class ModelConfig:
   def build_agent(self) -> truco_agents.Agent:
     if self.kind == KIND_RANDOM:
       return truco_agents.RandomBotAgent()
+    if self.kind == KIND_HEURISTIC:
+      from runner.heuristic import HeuristicBotAgent  # pylint: disable=import-outside-toplevel
+
+      return HeuristicBotAgent()
     if self.kind == KIND_KBENCH:
       from kbench_model import KbenchModel  # pylint: disable=import-outside-toplevel
 
