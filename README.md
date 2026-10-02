@@ -155,7 +155,13 @@ duplicate pair (the orig and dup score margins summed). 95% CIs come from a
 and completeness stratum (orig and dup share deals, so they move together;
 complete/incomplete counts stay fixed so both comparison graphs are preserved),
 with a fixed RNG seed so reports are deterministic. A disconnected graph makes
-BT ratings unavailable, but does not suppress raw win-rate CIs. `tournament.json` holds these under `ratings`
+BT ratings unavailable, but does not suppress raw win-rate CIs. The
+Bradley–Terry solver is a safeguarded Newton iteration and reports
+`fit_status`: if it does not converge, no unfinished point estimate is
+published and the report says so instead. If any bootstrap replicate fails to
+fit, the BT CIs are suppressed and `ratings.bootstrap.bt_failed_resamples`
+records the count; win rates and margin strength are still reported.
+`tournament.json` holds these under `ratings`
 (method, anchor, connectivity, bootstrap settings, per-model fields), plus
 `bt_elo`, `bt_elo_ci`, `margin_strength`, `margin_strength_ci` and `win_rate_ci`
 on each standings row and `pairs`, `pair_margin_mean`, `pair_record` on each

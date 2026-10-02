@@ -46,7 +46,7 @@ def test_two_model_closed_form():
   assert r["connected"] and r["anchor"] is None
 
 
-def test_three_model_mm_matches_likelihood_equations():
+def test_three_model_matches_likelihood_equations():
   ss = wins_only("a", "b", 6, 4) + wins_only("b", "c", 7, 3, 100) + wins_only("a", "c", 2, 1, 200)
   wins = {("a", "b"): 6, ("b", "a"): 4, ("b", "c"): 7, ("c", "b"): 3, ("a", "c"): 2, ("c", "a"): 1}
   logp = ratings.fit_bradley_terry(wins)
@@ -58,6 +58,59 @@ def test_three_model_mm_matches_likelihood_equations():
     assert w_i == pytest.approx(sum(n[j] * p[i] / (p[i] + p[j]) for j in n), rel=1e-8)
   r = ratings.compute_ratings(ss, resamples=20)
   assert r["models"]["a"]["bt_elo"] == pytest.approx(ratings.ELO_PER_LOG * logp["a"])
+
+
+@pytest.mark.parametrize("count", [10_000, 1_000_000])
+def test_large_transitive_sweep_converges_to_symmetric_score_equations(count):
+  wins = {("a", "b"): count, ("b", "c"): count, ("a", "c"): count}
+  logp = ratings.fit_bradley_terry(wins)
+  assert logp is not None
+  assert logp["b"] * ratings.ELO_PER_LOG == pytest.approx(0, abs=1e-6)
+  assert logp["a"] == pytest.approx(-logp["c"], abs=1e-9)
+  p = {k: math.exp(v) for k, v in logp.items()}
+  for i in p:
+    observed = sum(wins.get((i, j), 0) + 0.5 for j in p if j != i)
+    expected = sum((wins.get((i, j), 0) + wins.get((j, i), 0) + 1)
+                   * p[i] / (p[i] + p[j]) for j in p if j != i)
+    assert observed == pytest.approx(expected, abs=1e-8, rel=0)
+
+
+def test_iteration_exhaustion_does_not_return_an_unfinished_fit():
+  wins = {("a", "b"): 10_000, ("b", "c"): 10_000, ("a", "c"): 10_000}
+  assert ratings.fit_bradley_terry(wins, max_iter=1) is None
+  assert ratings.fit_bradley_terry(wins, max_iter=0) is None
+
+
+def test_point_fit_failure_preserves_other_statistics(monkeypatch):
+  ss = pair("a", "b", 0, (12, 6), (6, 12))
+  monkeypatch.setattr(ratings, "fit_bradley_terry", lambda *args, **kwargs: None)
+  r = ratings.compute_ratings(ss, resamples=10)
+  assert r["connected"] is True
+  assert r["fit_status"] == "not_converged"
+  for m in r["models"].values():
+    assert m["bt_elo"] is None and m["bt_elo_ci"] is None
+    assert m["win_rate_ci"] == [0.5, 0.5]
+    assert m["margin_strength"] == 0
+    assert m["margin_strength_ci"] == [0.0, 0.0]
+
+
+def test_failed_bootstrap_fit_suppresses_bt_intervals(monkeypatch):
+  ss = pair("a", "b", 0, (12, 6), (6, 12)) + pair("a", "b", 1, (12, 6), (12, 6))
+  real_fit = ratings.fit_bradley_terry
+  calls = 0
+
+  def fail_one_sample(*args, **kwargs):
+    nonlocal calls
+    calls += 1
+    return None if calls == 3 else real_fit(*args, **kwargs)
+
+  monkeypatch.setattr(ratings, "fit_bradley_terry", fail_one_sample)
+  r = ratings.compute_ratings(ss, resamples=10)
+  assert r["fit_status"] == "converged"
+  assert r["bootstrap"]["bt_failed_resamples"] == 1
+  for m in r["models"].values():
+    assert m["bt_elo"] is not None and m["bt_elo_ci"] is None
+    assert m["win_rate_ci"] is not None and m["margin_strength_ci"] is not None
 
 
 def test_symmetric_record_gives_equal_ratings():
@@ -227,3 +280,14 @@ def test_build_report_tolerates_label_missing_from_models():
   models = [ModelConfig(kind="random", label="a"), ModelConfig(kind="random", label="b")]
   rep = tournament.build_report(models, ss)
   assert {r["model"] for r in rep["standings"]} == {"a", "b", "dropped"}
+
+
+def test_build_report_shows_solver_failure_without_disconnected(monkeypatch):
+  ss = pair("a", "b", 0, (12, 6), (6, 12))
+  models = [ModelConfig(kind="random", label="a"), ModelConfig(kind="random", label="b")]
+  monkeypatch.setattr(ratings, "fit_bradley_terry", lambda *args, **kwargs: None)
+  rep = tournament.build_report(models, ss)
+  assert rep["ratings"]["connected"] is True
+  out = tournament.format_report(rep)
+  assert "solver did not converge" in out
+  assert "graph is disconnected" not in out

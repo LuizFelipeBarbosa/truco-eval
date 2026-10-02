@@ -6,7 +6,7 @@ play (models dropped for a day, budget cut-offs mid-seed). This module fits:
 * Bradley–Terry on match wins (primary), reported on the Elo scale
   (``400·log10`` of the strength). Every pairing that was played gets
   ``PRIOR_PSEUDO_WINS`` virtual wins on each side, so perfect records stay
-  finite. Fitted with Hunter's (2004) MM algorithm.
+  finite. Fitted with safeguarded Newton iteration in log-strength space.
 * Margin strength: least squares ``pair_margin ≈ s_x − s_y`` over complete
   duplicate pairs, where a pair's margin is X's final-score margin in the
   ``orig`` match plus X's margin in the ``dup`` match (same deals, seats
@@ -127,31 +127,67 @@ def fit_bradley_terry(
 
   ``wins[(i, j)]`` is the number of matches i beat j. Every pairing with at
   least one match gets ``prior`` virtual wins on each side. Returns None when
-  the comparison graph is disconnected (strengths are then not identifiable).
+  the comparison graph is disconnected or the solver cannot converge.
   """
   pairs = {tuple(sorted(k)) for k, v in wins.items() if v > 0}
   players = sorted({p for pair in pairs for p in pair})
   if not players or not _connected(players, pairs):
     return None
   games: dict[str, list[tuple[str, float]]] = {p: [] for p in players}  # i -> [(j, n_ij)]
-  won = {p: 0.0 for p in players}
   for i, j in sorted(pairs):
-    w_ij, w_ji = wins.get((i, j), 0.0) + prior, wins.get((j, i), 0.0) + prior
-    games[i].append((j, w_ij + w_ji))
-    games[j].append((i, w_ij + w_ji))
-    won[i] += w_ij
-    won[j] += w_ji
+    n = wins.get((i, j), 0.0) + wins.get((j, i), 0.0) + 2 * prior
+    games[i].append((j, n))
+    games[j].append((i, n))
+  idx = {p: i for i, p in enumerate(players)}
   logp = {p: (init or {}).get(p, 0.0) for p in players}
+  if not all(math.isfinite(v) for v in logp.values()):
+    return None
+  shift = logp[players[0]]
+  logp = {p: v - shift for p, v in logp.items()}
+
+  def state(values):
+    loss = 0.0
+    gradient = [0.0] * len(players)
+    hessian = [[0.0] * len(players) for _ in players]
+    for i, player in enumerate(players):
+      for opponent, n in games[player]:
+        j = idx[opponent]
+        d = values[player] - values[opponent]
+        q = math.exp(-abs(d))
+        p, complement = ((1 / (1 + q), q / (1 + q)) if d >= 0
+                         else (q / (1 + q), 1 / (1 + q)))
+        w_ij = wins.get((player, opponent), 0.0) + prior
+        w_ji = wins.get((opponent, player), 0.0) + prior
+        gradient[i] += w_ij * complement - w_ji * p
+        curvature = n * q / (1 + q) ** 2
+        hessian[i][i] += curvature
+        hessian[i][j] -= curvature
+        if i < j:
+          loss += w_ij * max(-d, 0) + w_ji * max(d, 0) + n * math.log1p(q)
+    return loss, gradient, hessian
+
   for _ in range(max_iter):
-    p = {k: math.exp(v) for k, v in logp.items()}
-    new = {i: math.log(won[i] / sum(n / (p[i] + p[j]) for j, n in games[i])) for i in players}
-    mean = sum(new.values()) / len(new)
-    new = {k: v - mean for k, v in new.items()}
-    delta = max(abs(new[k] - logp[k]) for k in players)
-    logp = new
-    if delta < tol:
-      break
-  return logp
+    loss, gradient, hessian = state(logp)
+    try:
+      step = [0.0] + _solve([row[1:] for row in hessian[1:]], gradient[1:])
+    except ValueError:
+      return None
+    if not math.isfinite(loss) or not all(math.isfinite(v) for v in step):
+      return None
+    if max(abs(v) for v in step) < tol:
+      mean = sum(logp.values()) / len(logp)
+      return {p: v - mean for p, v in logp.items()}
+    improvement = sum(g * s for g, s in zip(gradient, step))
+    rate = 1.0
+    for _ in range(50):
+      candidate = {p: logp[p] + rate * step[i] for i, p in enumerate(players)}
+      if state(candidate)[0] <= loss - 1e-4 * rate * improvement + 1e-12 * max(1.0, loss):
+        logp = candidate
+        break
+      rate *= 0.5
+    else:
+      return None
+  return None
 
 
 # -------------------------------------------------------- margin strength
@@ -254,8 +290,11 @@ def compute_ratings(
   seen = sorted({p for pair in units_by_pair for p in pair})
   all_labels = list(dict.fromkeys([*labels, *seen]))
   wins, record, margins = _tally(units_by_pair)
+  connected = _connected(seen, units_by_pair)
   logp = fit_bradley_terry(wins)
-  if anchor is not None and (logp is None or anchor not in logp):
+  fit_status = ("converged" if logp is not None else "no_matches" if not seen
+                else "disconnected" if not connected else "not_converged")
+  if anchor is not None and anchor not in seen:
     anchor = None
   bt = _anchored(logp, anchor, ELO_PER_LOG)
   ms = _anchored(fit_margin_strength(margins), anchor)
@@ -264,14 +303,19 @@ def compute_ratings(
   ms_s: dict[str, list[float]] = collections.defaultdict(list)
   wr_s: dict[str, list[float]] = collections.defaultdict(list)
   rng = random.Random(seed)
+  bt_failed_resamples = 0
   strata = {k: [[u for u in units_by_pair[k] if u["complete"] == complete]
                 for complete in (True, False)] for k in sorted(units_by_pair)}
   for _ in range(resamples):
     sample = {k: [rng.choice(group) for group in groups for _ in group]
               for k, groups in strata.items()}
     w, rec, mg = _tally(sample)
-    for k, v in (_anchored(fit_bradley_terry(w, init=logp, tol=1e-7), anchor, ELO_PER_LOG) or {}).items():
-      bt_s[k].append(v)
+    if logp is not None:
+      sample_fit = fit_bradley_terry(w, init=logp, tol=1e-7)
+      if sample_fit is None:
+        bt_failed_resamples += 1
+      for k, v in (_anchored(sample_fit, anchor, ELO_PER_LOG) or {}).items():
+        bt_s[k].append(v)
     for k, v in (_anchored(fit_margin_strength(mg), anchor) or {}).items():
       ms_s[k].append(v)
     for k, (wn, n) in rec.items():
@@ -295,7 +339,8 @@ def compute_ratings(
         "win_rate": (record[l][0] / record[l][1]) if record.get(l) and record[l][1] else None,
         "win_rate_ci": _ci(wr_s.get(l, [])),
         "bt_elo": None if bt is None else bt.get(l),
-        "bt_elo_ci": _ci(bt_s.get(l, [])) if bt is not None and l in bt else None,
+        "bt_elo_ci": (_ci(bt_s.get(l, [])) if bt is not None and l in bt
+                      and bt_failed_resamples == 0 else None),
         "margin_strength": None if ms is None else ms.get(l),
         "margin_strength_ci": _ci(ms_s.get(l, [])) if ms is not None and l in ms else None,
     }
@@ -304,11 +349,13 @@ def compute_ratings(
       "scale": "elo",
       "anchor": anchor,
       "prior_pseudo_wins": PRIOR_PSEUDO_WINS,
-      "connected": logp is not None,
+      "connected": connected,
+      "fit_status": fit_status,
       "unpaired_matches": sum(len(u["matches"]) for us in units_by_pair.values()
                               for u in us if not u["complete"]),
       "bootstrap": {"resamples": resamples, "unit": "pairing x seed",
-                    "strata": "pairing x completeness", "seed": seed},
+                    "strata": "pairing x completeness", "seed": seed,
+                    "bt_failed_resamples": bt_failed_resamples},
       "models": models,
       "head_to_head": _pairing_stats(units_by_pair),
   }

@@ -204,13 +204,22 @@ def format_report(report: dict[str, Any]) -> str:
                  f"{f(r['cost_per_match_usd'], '{:7.3f}')}")
   rat = report.get("ratings")
   if rat:
-    if rat["connected"]:
+    status = rat.get("fit_status", "converged" if rat["connected"] else "disconnected")
+    if status == "converged":
       lines.append(
           f"Ratings: Bradley–Terry Elo (anchor: {rat['anchor'] or 'mean of rated models'}, "
           f"+{rat['prior_pseudo_wins']} pseudo-wins per side per pairing); 95% CIs from "
           f"{rat['bootstrap']['resamples']} bootstrap resamples of (pairing, seed) units; "
           f"margin = points per duplicate pair; {rat['unpaired_matches']} unpaired match(es) "
           "excluded from margin.")
+      if rat["bootstrap"].get("bt_failed_resamples", 0):
+        lines.append(
+            f"BT confidence intervals unavailable: {rat['bootstrap']['bt_failed_resamples']} "
+            "bootstrap fit(s) did not converge.")
+    elif status == "no_matches":
+      lines.append("Ratings unavailable: no matches.")
+    elif status == "not_converged":
+      lines.append("Ratings unavailable: Bradley–Terry solver did not converge.")
     else:
       lines.append("Ratings unavailable: comparison graph is disconnected.")
   lines.append("")
