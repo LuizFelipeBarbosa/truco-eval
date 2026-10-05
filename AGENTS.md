@@ -71,7 +71,7 @@ No linter or formatter is configured. Match the surrounding style by hand (see
 4. **Duplicate matches.**
    - `seed{N}_orig` and `seed{N}_dup` see identical deals with the teams swapped across seats.
    - Even seats (team A) lead hand 1 and win about 56% of matches. Only complete orig+dup pairs are seat-fair.
-   - Keep pair-level logic, such as margin and the bootstrap by (pairing, seed), pair-aware.
+   - Keep pair-level logic, such as margin, pair-aware; the bootstrap resamples whole seeds across pairings (orig and dup of a seed still move together).
 
 ### Benchmark-affecting changes
 

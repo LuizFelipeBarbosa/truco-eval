@@ -5,11 +5,12 @@ from __future__ import annotations
 import collections
 from typing import Any, Iterable
 
-_SUM_KEYS = ("decisions", "model_decisions", "illegal_responses", "fallbacks", "folds",
-             "fold_opportunities", "raise_calls", "raise_opportunities", "responses",
-             "accepts", "declines", "raise_backs", "mao_play", "mao_forfeit", "talk_lines",
-             "requests", "cost_responses", "prompt_tokens", "completion_tokens", "reasoning_tokens",
-             "cost_usd", "generation_secs")
+_SUM_KEYS = (
+    "decisions", "model_decisions", "illegal_responses", "fallbacks", "folds",
+    "fold_opportunities", "raise_calls", "raise_opportunities", "responses",
+    "accepts", "declines", "raise_backs", "mao_play", "mao_forfeit", "talk_lines",
+    "requests", "cost_responses", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+    "cost_usd", "generation_secs")
 
 
 def _rate(num: float, den: float) -> float | None:

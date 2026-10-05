@@ -278,7 +278,7 @@ def merge_all(runs_root: str | None = None) -> dict[str, Any]:
            f"orig+dup pairs ({len(unpaired_excluded)} unpaired excluded, {len(superseded)} "
            f"superseded by later runs), runs: "
            f"{', '.join(os.path.basename(d) for d in dirs)}", "", tournament.format_report(report), "",
-           "Bootstrap 95% CIs (resampling (pairing, seed) units):"]
+           "Bootstrap 95% CIs (resampling whole seeds across pairings):"]
   for r in report["standings"]:
     n, w = r["matches"], r["wins"]
     if n:
