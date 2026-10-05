@@ -109,9 +109,9 @@ the rating anchor once it has at least 20 complete pairs against every opponent.
 that already have a `summary.json` are skipped, so a run can be stopped and
 relaunched, extended with more seeds, or have failed matches replayed after a
 fix. A resumed run first checks every existing `summary.json` against the
-current team settings (slug, provider, model and API options, re-prompts, label)
-and refuses to start if any differ; write changed settings to a new `--out`
-directory instead.
+current match identity (player count, seed, orig/dup) and team settings (slug,
+provider, model and API options, re-prompts, label) and refuses to start if any
+differ; write changed settings to a new `--out` directory instead.
 
 ```bash
 uv run python -m runner.cli tournament --models-file models.json --seeds 100 --duplicate \

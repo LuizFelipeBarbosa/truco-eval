@@ -36,6 +36,43 @@ def test_resume_rejects_changed_team_settings_before_playing(tmp_path):
   assert calls == [] and summary_path.read_bytes() == old_summary
 
 
+def test_resume_rejects_changed_player_count_before_playing(tmp_path):
+  from runner.match_runner import play_match
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+  tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                            num_players=4, progress=lambda m: None, play_fn=play_match)
+  summary_path = tmp_path / "a__vs__b" / "seed0_orig" / "summary.json"
+  old_summary = summary_path.read_bytes()
+  calls = []
+  with pytest.raises(ValueError) as caught:
+    tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                              num_players=6, progress=lambda m: None,
+                              play_fn=lambda spec: calls.append(spec))
+  message = str(caught.value)
+  assert str(summary_path.parent) in message
+  assert "match num_players: old=4, new=6" in message
+  assert "team A" not in message and "team B" not in message
+  assert calls == [] and summary_path.read_bytes() == old_summary
+
+
+def test_resume_reports_missing_match_field(tmp_path):
+  from runner.match_runner import play_match
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+  tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                            progress=lambda m: None, play_fn=play_match)
+  summary_path = tmp_path / "a__vs__b" / "seed0_orig" / "summary.json"
+  summary = json.loads(summary_path.read_text())
+  del summary["num_players"]
+  summary_path.write_text(json.dumps(summary))
+  calls = []
+  with pytest.raises(ValueError, match="match num_players: old=<missing>, new=4"):
+    tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                              progress=lambda m: None, play_fn=lambda spec: calls.append(spec))
+  assert calls == []
+
+
 def test_pairings_and_dirs(tmp_path):
   assert [(a.display, b.display) for a, b in tournament.pairings(BOTS)] == [
       ("bot0", "bot1"), ("bot0", "bot2"), ("bot1", "bot2")]

@@ -50,15 +50,28 @@ def _config_mismatches(prior: dict[str, Any],
 
 def _prior_mismatches(spec: MatchSpec,
                       prior: dict[str, Any]) -> dict[str, dict[str, tuple[Any, Any]]]:
-  """Compare a prior summary's team configs with the current match spec."""
-  prior_teams = prior.get("team_config", {})
+  """Compare a prior summary's match identity and team configs with the current match spec.
+
+  The out_dir does not encode the player count, so the match-level fields are checked too.
+  Every summary has recorded them since the first commit, so an absent one is a mismatch.
+  ``code_version`` is deliberately not compared: resume exists to replay failed matches after
+  a code fix.
+  """
   mismatches: dict[str, dict[str, tuple[Any, Any]]] = {}
+  expected_match = {"num_players": spec.num_players, "seed": spec.seed, "swap": spec.swap,
+                    "match_id": spec.match_id}
+  match_differences = {
+      key: (prior.get(key, _MISSING), new_value) for key, new_value in expected_match.items()
+      if prior.get(key, _MISSING) != new_value}
+  if match_differences:
+    mismatches["match"] = match_differences
+  prior_teams = prior.get("team_config", {})
   for team in ("A", "B"):
     expected = spec.config_for_team(team).to_dict()
     old = prior_teams.get(team, {}) if isinstance(prior_teams, dict) else {}
     differences = _config_mismatches(old if isinstance(old, dict) else {}, expected)
     if differences:
-      mismatches[team] = differences
+      mismatches[f"team {team}"] = differences
   return mismatches
 
 
@@ -152,9 +165,9 @@ def run_tournament(
       mismatches = _prior_mismatches(spec, prior)
       if mismatches:
         details = []
-        for team, differences in mismatches.items():
+        for scope, differences in mismatches.items():
           details.extend(
-              f"team {team} {key}: old={_format_old(old)}, new={_format_old(new)}"
+              f"{scope} {key}: old={_format_old(old)}, new={_format_old(new)}"
               for key, (old, new) in differences.items())
         resume_mismatches.append(f"{spec.out_dir}: " + "; ".join(details))
       else:
@@ -163,7 +176,7 @@ def run_tournament(
       todo.append(spec)
   if resume_mismatches:
     raise ValueError(
-        "Existing match summaries do not match the current team settings:\n"
+        "Existing match summaries do not match the current match or team settings:\n"
         + "\n".join(f"  {mismatch}" for mismatch in resume_mismatches)
         + "\nUse a new output directory (or --no-resume) to run with different settings.")
   progress(f"Tournament: {len(models)} models, {len(pairings(models))} pairings, "
