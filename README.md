@@ -122,11 +122,13 @@ over all matches with Bradley–Terry Elo ratings and bootstrap confidence inter
 (see [Ratings](#ratings)), and a head-to-head win-rate matrix. `tournament.json`
 also records the code version that produced it.
 
-With duplicates enabled, matches are ordered by seed and pairing so each
-original is followed immediately by its seat-swapped duplicate. The Kaggle
-`Budget` reserves the expected cost of both matches before admitting an
-original, always admits its reserved duplicate once the original has started,
-and charges spend from failed matches against the cap.
+With duplicates enabled, matches are ordered by seed and pairing, and each
+original/duplicate pair runs as one unit in a single worker (the duplicate
+starts after its original finishes). The Kaggle `Budget` admits a pair as a
+unit: it starts an original only if the expected cost of both halves fits,
+always starts the duplicate of an admitted original, refuses the duplicate when
+its original was refused or failed, and charges failed matches at least the
+expected match cost.
 
 ## Interpreting the outputs
 
@@ -137,10 +139,10 @@ Per match:
 
 | File | Contents |
 |---|---|
-| `transcript.jsonl` | Every event in order. Engine events (`source: engine`): deal (`hand_start`, all hands and the vira), `mao_de_onze`, `mao_de_ferro`, every `action` with its talk, `card_played`, `trick_result`, `raise_called` / `raise_accepted` / `raise_declined`, `hand_result` (winner, points, reason, stake history), `match_end`. Runner events (`source: runner`): `match_config` (seed, seat → exact slug, pinned provider, model options, and the full system instruction), `prompt` (the exact prompt text a seat received, decision type, legal list), `response` (main response, reasoning where the API exposes it, served provider, token usage, OpenRouter cost, latency), `illegal_action` (seat, hand, trick, attempt, raw response, legal list), `fallback_action` (the random replacement), `decision` (action, talk, source). `match_config.code_version` records the source hash, Git state, package versions, and harness commit. |
+| `transcript.jsonl` | Every event in order. Engine events (`source: engine`): deal (`hand_start`, all hands and the vira), `mao_de_onze`, `mao_de_ferro`, every `action` with its talk, `card_played`, `trick_result`, `raise_called` / `raise_accepted` / `raise_declined`, `hand_result` (winner, points, reason, stake history), `match_end`. Runner events (`source: runner`): `match_config` (seed, seat → exact slug, pinned provider, model options, and the full system instruction), `prompt` (the exact prompt text a seat received, decision type, legal list), `response` (main response, reasoning where the API exposes it, served provider, token usage, OpenRouter cost, latency), `illegal_action` (seat, hand, trick, attempt, raw response, legal list), `fallback_action` (the random replacement), `decision` (action, talk, source), and `match_error` (the error and the partial known cost, a lower bound, when a match fails). `match_config.code_version` records the source hash, Git state, package versions, and harness commit. |
 | `engine_events.jsonl` | Engine events only, no timestamps. Byte-identical for the same seed and action sequence. `uv run python -m runner.cli replay <file>` rebuilds the match from the seed plus logged actions and verifies this. |
 | `replay.txt` | Human-readable replay: deals, actions, talk, trick and hand results, illegal replies, fallbacks. |
-| `summary.json` | Winner, scores, hand-by-hand history, per-team and per-seat counters (decisions, illegal responses, fallbacks, folds, raise calls / opportunities, accept / decline / raise-back, mão de onze choices, tokens, cost, providers seen). |
+| `summary.json` | Winner, scores, hand-by-hand history, per-team and per-seat counters (decisions, illegal responses, fallbacks, folds, raise calls / opportunities, accept / decline / raise-back, mão de onze choices, tokens, cost, providers seen), and `code_version` (same shape as `match_config.code_version`). |
 
 `aggregate.json` and the table printed at the end give, per model configuration:
 match win rate, points per hand, hands per match, illegal-action rate (illegal

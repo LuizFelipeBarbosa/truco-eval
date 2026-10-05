@@ -59,3 +59,14 @@ def test_merge_reports_superseded_and_unpaired_runs(tmp_path):
     leaderboard = f.read()
   assert "Superseded (later run kept):" in leaderboard
   assert "Unpaired, excluded:" in leaderboard
+
+
+def test_played_seeds_counts_only_complete_pairs(tmp_path):
+  runs = os.path.join(os.fspath(tmp_path), "truco_runs")
+  for pairing, match_id in (("a__vs__b", "seed5_orig"), ("a__vs__b", "seed5_dup"),
+                            ("a__vs__b", "seed6_orig"), ("c__vs__d", "seed6_dup"),
+                            ("c__vs__d", "seed7_orig")):
+    os.makedirs(os.path.join(runs, pairing, match_id))
+    with open(os.path.join(runs, pairing, match_id, "summary.json"), "w", encoding="utf-8") as f:
+      f.write("{}")
+  assert _load_daily().played_seeds(os.fspath(tmp_path)) == {5}

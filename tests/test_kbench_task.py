@@ -1,6 +1,9 @@
 """Kaggle Benchmarks helpers: slug resolution and the tournament budget guard."""
 
+import random
 import runpy
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -170,6 +173,48 @@ def test_budget_failed_match_releases_in_flight_once(tmp_path, cost_usd_so_far):
     budget.play_fn(following)
 
 
+def test_budget_refused_original_blocks_its_duplicate(tmp_path):
+  orig, dup = _budget_specs(tmp_path)[0:2]
+  played = []
+
+  def fake_play(spec):
+    played.append(spec.match_id)
+    return _budget_summary(spec, 0.6)
+
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6, play=fake_play)
+  with pytest.raises(kbench_task.BudgetExhausted):
+    budget.play_fn(orig)
+  with pytest.raises(kbench_task.BudgetExhausted, match="original.*not started"):
+    budget.play_fn(dup)
+  assert played == []
+  assert (budget.spent_usd, budget.finished, budget.failed) == (0.0, 0, 0)
+
+
+def test_budget_admits_duplicate_whose_original_it_never_saw(tmp_path):
+  dup = _budget_specs(tmp_path)[1]
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6,
+                              play=lambda spec: _budget_summary(spec, 0.6))
+  budget.play_fn(dup)  # resume: the original's summary already exists
+  assert budget.finished == 1
+
+
+@pytest.mark.parametrize("estimate", [0.3, 0.7])
+def test_budget_failed_match_charges_at_least_expected_cost(tmp_path, estimate):
+  spec = _budget_specs(tmp_path)[0]
+
+  def fails_without_tallied_cost(spec):
+    error = RuntimeError("failed")
+    error.cost_usd_so_far = 0.0
+    raise error
+
+  budget = kbench_task.Budget(2.0, initial_estimate_usd=estimate,
+                              play=fails_without_tallied_cost)
+  with pytest.raises(RuntimeError):
+    budget.play_fn(spec)
+  assert budget.spent_usd == pytest.approx(estimate)
+  assert budget.expected_match_usd() == pytest.approx(estimate)
+
+
 def test_budget_paired_false_keeps_one_match_admission(tmp_path):
   orig, dup = _budget_specs(tmp_path)[0:2]
   budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6, paired=False,
@@ -193,6 +238,30 @@ def test_budget_tournament_cutoff_keeps_played_pairs_complete(tmp_path):
   origs = {(a, b, seed) for a, b, seed, swap in played if not swap}
   dups = {(a, b, seed) for a, b, seed, swap in played if swap}
   assert origs <= dups
+
+
+def test_budget_parallel_tournament_cutoff_leaves_no_orphans(tmp_path):
+  models = [ModelConfig(kind=KIND_RANDOM, label=l) for l in ("a", "b", "c")]
+  for i in range(5):
+    rng = random.Random(i)
+    played = []
+    lock = threading.Lock()
+
+    def fake_play(spec):
+      with lock:
+        delay = rng.uniform(0.0, 0.01)
+      time.sleep(delay)
+      with lock:
+        played.append((spec.team_a.display, spec.team_b.display, spec.seed, spec.swap))
+      return _budget_summary(spec, 0.5)
+
+    budget = kbench_task.Budget(3.5, initial_estimate_usd=0.5, play=fake_play)
+    tournament.run_tournament(models, seeds=[1, 2, 3], out_root=str(tmp_path / str(i)),
+                              parallel=4, progress=lambda m: None, play_fn=budget.play_fn)
+    origs = {(a, b, seed) for a, b, seed, swap in played if not swap}
+    dups = {(a, b, seed) for a, b, seed, swap in played if swap}
+    assert 0 < len(played) < 18  # the cap cuts the run part-way
+    assert origs == dups
 
 
 def test_quick_preflight_skips_non_proxy_models():

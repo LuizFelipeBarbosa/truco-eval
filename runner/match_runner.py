@@ -122,6 +122,7 @@ def play_match(
 ) -> dict[str, Any]:
   """Play one full match and return its summary dict."""
   logger: MatchLogger | None = None
+  engine: TrucoMatch | None = None
   team_stats: dict[str, dict[str, Any]] = {}
   try:
     seat_configs = spec.seat_configs()
@@ -237,12 +238,26 @@ def play_match(
         "seat_stats": {str(s): _finalize_stats(st) for s, st in seat_stats.items()},
         "engine_event_count": len(engine.events),
         "out_dir": spec.out_dir,
+        "code_version": truco_version.code_version(),
     }
     logger.close(engine, summary)
     return summary
   except Exception as e:  # pylint: disable=broad-exception-caught
+    # Only tallied decisions are counted: requests made inside a ``decide()`` that raised are
+    # not visible here, so callers must treat this as a lower bound (the Kaggle ``Budget``
+    # charges a failed match at least its expected match cost).
     e.cost_usd_so_far = sum((s["cost_usd"] for s in team_stats.values()), 0.0)
     if logger is not None:
+      error_event: dict[str, Any] = {
+          "source": "runner", "type": "match_error", "match_id": spec.match_id,
+          "error": f"{type(e).__name__}: {e}", "cost_usd_so_far": e.cost_usd_so_far,
+      }
+      if engine is not None:
+        error_event["hand"] = engine.hand_index
+      try:
+        logger.event(error_event)
+      except Exception:  # pylint: disable=broad-exception-caught
+        pass  # e.g. the failure came from ``logger.close`` after the transcript was closed
       logger.close_transcript()
     raise
 

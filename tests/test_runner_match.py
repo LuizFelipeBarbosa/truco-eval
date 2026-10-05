@@ -94,6 +94,8 @@ def test_transcript_contains_illegal_and_fallback_events_and_usage(tmp_path):
   cfg = events[0]
   assert cfg["type"] == "match_config" and cfg["seats"]["0"]["display"] == "botA"
   assert "Truco Paulista" in cfg["system_instruction"]
+  assert summary["code_version"] == cfg["code_version"]
+  assert "source_sha256" in summary["code_version"]
   ill = [e for e in events if e["type"] == "illegal_action"]
   assert all({"seat", "hand", "trick", "attempt", "raw_response", "legal_actions"} <= set(e) for e in ill)
   # Every fallback action was preceded by two illegal attempts for that decision.
@@ -136,8 +138,10 @@ def test_failed_match_attaches_partial_cost_and_closes_transcript(tmp_path):
   assert caught.value.cost_usd_so_far == pytest.approx(0.0)
   transcript = os.path.join(spec.out_dir, "transcript.jsonl")
   assert os.path.exists(transcript) and os.path.getsize(transcript) > 0
-  with open(transcript, encoding="utf-8") as f:
-    assert f.read()
+  last = _events(spec.out_dir)[-1]
+  assert last["source"] == "runner" and last["type"] == "match_error"
+  assert last["match_id"] == "seed31_orig" and last["error"] == "RuntimeError: agent failed"
+  assert last["cost_usd_so_far"] == pytest.approx(0.0) and last["hand"] == 0
 
 
 def test_talk_flows_from_model_to_engine_and_other_seats(tmp_path):

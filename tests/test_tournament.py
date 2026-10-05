@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 
 from runner import cli
 from runner import tournament
@@ -82,6 +84,42 @@ def test_run_tournament_interleaves_each_pair_before_next_pair(tmp_path):
       (2, "bot0", "bot2", False), (2, "bot0", "bot2", True),
       (2, "bot1", "bot2", False), (2, "bot1", "bot2", True),
   ]
+
+
+def test_run_tournament_parallel_starts_duplicate_after_its_original_finishes(tmp_path):
+  models = [ModelConfig(kind="random", label=f"bot{i}") for i in range(4)]
+  events = []
+  lock = threading.Lock()
+
+  def recording(spec):
+    key = (spec.seed, spec.team_a.display, spec.team_b.display)
+    with lock:
+      events.append(("start", key, spec.swap))
+    time.sleep(0.005 if spec.swap else 0.02)  # slow originals invite a racing duplicate
+    with lock:
+      events.append(("finish", key, spec.swap))
+    return {
+        "match_id": spec.match_id,
+        "seed": spec.seed,
+        "swap": spec.swap,
+        "winner_team": "A",
+        "team_config": {"A": spec.config_for_team("A").to_dict(),
+                         "B": spec.config_for_team("B").to_dict()},
+        "winner_config": spec.team_a.display,
+        "scores": {"A": 12, "B": 0},
+        "hands_played": 1,
+        "team_stats": {"A": {"cost_usd": 0.0}, "B": {"cost_usd": 0.0}},
+    }
+
+  rep = tournament.run_tournament(models, seeds=[1, 2, 3], out_root=str(tmp_path), parallel=4,
+                                  progress=lambda m: None, play_fn=recording)
+  assert rep["matches_played"] == 6 * 3 * 2
+  keys = {key for _, key, _ in events}
+  assert len(keys) == 6 * 3
+  for key in keys:
+    orig_finish = events.index(("finish", key, False))
+    dup_start = events.index(("start", key, True))
+    assert orig_finish < dup_start, key
 
 
 def test_heuristic_anchors_ratings(tmp_path):

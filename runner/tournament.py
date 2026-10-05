@@ -123,14 +123,21 @@ def run_tournament(
              f"({done[0]}/{len(specs)} done)")
     return s
 
-  # Interleave pairings so one slow model does not serialize the run, and keep
-  # each original immediately next to its duplicate for pair-aware budgets.
-  todo.sort(key=lambda sp: (sp.seed, sp.team_a.display, sp.team_b.display, sp.swap))
-  if parallel > 1 and todo:
+  def _play_unit(unit: list[MatchSpec]):
+    return [_play(sp) for sp in unit]
+
+  # Interleave pairings so one slow model does not serialize the run. Each
+  # pending orig/dup pair is one unit that a single worker plays in order, so
+  # the original finishes before its duplicate starts: a pair-aware budget
+  # then never admits a duplicate ahead of an original it would refuse.
+  pair_key = lambda sp: (sp.seed, sp.team_a.display, sp.team_b.display)
+  todo.sort(key=lambda sp: (*pair_key(sp), sp.swap))
+  units = [list(g) for _, g in itertools.groupby(todo, key=pair_key)]
+  if parallel > 1 and units:
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as ex:
-      results = list(ex.map(_play, todo))
+      results = [r for rs in ex.map(_play_unit, units) for r in rs]
   else:
-    results = [_play(sp) for sp in todo]
+    results = [r for unit in units for r in _play_unit(unit)]
   summaries.extend(r for r in results if r is not None)
   report = build_report(models, summaries, failures)
   report["code_version"] = truco_version.code_version()

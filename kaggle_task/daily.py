@@ -119,8 +119,16 @@ def run_dir(label: str) -> str:
 
 
 def played_seeds(directory: str) -> set[int]:
-  return {int(m.group(1)) for f in glob.glob(os.path.join(directory, "truco_runs", "*", "*", "summary.json"))
-          if (m := re.search(r"/seed(\d+)_(?:orig|dup)/summary\.json$", f))}
+  """Seeds with a complete ``orig``+``dup`` pair in at least one pairing directory.
+
+  An orphan half is not seat-fair, so it neither advances ``next_seed`` past its seed nor makes
+  a run count as ok.
+  """
+  halves: dict[tuple[str, int], set[str]] = {}
+  for f in glob.glob(os.path.join(directory, "truco_runs", "*", "*", "summary.json")):
+    if m := re.search(r"/([^/]+)/seed(\d+)_(orig|dup)/summary\.json$", f):
+      halves.setdefault((m.group(1), int(m.group(2))), set()).add(m.group(3))
+  return {seed for (_, seed), kinds in halves.items() if kinds == {"orig", "dup"}}
 
 
 def collect(state: dict[str, Any], dry_run: bool) -> None:

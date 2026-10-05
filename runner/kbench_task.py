@@ -8,9 +8,10 @@ Two guards that matter on the Model Proxy's free quota:
   so the task can drop it from the roster and play the rest.
 * ``Budget``: reserves each original/duplicate pair's expected cost, including
   matches in flight and pending duplicates in admission checks. A reserved
-  duplicate starts even over the cap, unless its original has already failed.
-  Failed matches charge their reported partial spend, or the current estimate
-  if unavailable, without changing the mean cost of completed matches.
+  duplicate starts even over the cap, unless its original has already failed;
+  a duplicate whose original was refused is refused too. Failed matches are
+  charged at least the expected match cost (more if they report higher partial
+  spend), without changing the mean cost of completed matches.
 """
 
 from __future__ import annotations
@@ -65,9 +66,12 @@ class Budget:
   """Admit matches against a cap, reserving duplicates by default.
 
   The expected cost is the running mean of completed matches, or
-  ``initial_estimate_usd`` before any has completed. Failed-match spend is
-  charged to the cap but does not change that expected-cost estimate.
-  ``paired=False`` admits each match independently.
+  ``initial_estimate_usd`` before any has completed. Failed matches are
+  charged at least the expected match cost, because requests inside a failing
+  decision may never be tallied; that charge does not change the estimate.
+  When paired, a duplicate is refused if its original failed or was refused
+  here; a duplicate whose original this budget never saw (e.g. on resume) gets
+  the normal one-match check. ``paired=False`` admits each match independently.
   """
 
   def __init__(self, cap_usd: float, *, initial_estimate_usd: float = 0.0,
@@ -83,6 +87,7 @@ class Budget:
     self._in_flight = 0
     self._reserved: set[tuple[str, str, int]] = set()
     self._orig_failed: set[tuple[str, str, int]] = set()
+    self._blocked: set[tuple[str, str, int]] = set()
     self._play = play
     self._lock = threading.Lock()
 
@@ -101,25 +106,32 @@ class Budget:
         raise BudgetExhausted(
             f"budget: original for {key[0]} vs {key[1]} seed {key[2]} failed; "
             "duplicate is not started")
+      elif self._paired and spec.swap and key in self._blocked:
+        # A duplicate without its original is excluded from the leaderboard.
+        raise BudgetExhausted(
+            f"budget: original for {key[0]} vs {key[1]} seed {key[2]} was not started "
+            "(budget); duplicate is not started")
       else:
         need = 2 if self._paired and not spec.swap else 1
         committed = self.spent_usd + (
             self._in_flight + len(self._reserved) + need) * self.expected_match_usd()
         if self.spent_usd >= self.cap_usd or committed > self.cap_usd:
+          if self._paired and not spec.swap:
+            self._blocked.add(key)
           raise BudgetExhausted(
               f"budget: ${self.spent_usd:.2f} spent + {self._in_flight} in flight + "
               f"{len(self._reserved)} reserved + {need} needed would exceed "
               f"${self.cap_usd:.2f}")
         if self._paired and not spec.swap:
           self._reserved.add(key)
+          self._blocked.discard(key)
       self._in_flight += 1
     try:
       summary = self._play(spec)
     except Exception as e:  # pylint: disable=broad-exception-caught
       with self._lock:
-        cost = getattr(e, "cost_usd_so_far", None)
-        if cost is None:
-          cost = self.expected_match_usd()
+        # Partial spend under-reports: requests in a failing decide() are not tallied.
+        cost = max(getattr(e, "cost_usd_so_far", None) or 0.0, self.expected_match_usd())
         self.spent_usd += cost
         self.failed += 1
         if self._paired and not spec.swap:
