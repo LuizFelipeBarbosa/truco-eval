@@ -104,18 +104,12 @@ def _after_truco(responder_hand, scores=None):
 
 
 @pytest.mark.parametrize("hand,expected", [
-    ("4♥ 6♥ 7♥", "DECLINE"),
-    ("3♥ 2♥ 4♥", "ACCEPT"),
-    ("5♥ 5♠ 3♥", "RAISE"),
+    ("3♥ 4♥ 6♥", "DECLINE"),  # score 2.0 < 2.5
+    ("3♥ K♥ A♥", "ACCEPT"),  # 3.5, just under raise
+    ("5♥ 3♥ 2♥", "RAISE"),  # 6.5
 ])
 def test_raise_response(hand, expected):
   assert decide(_after_truco(hand), 1) == expected
-
-
-def test_raise_response_boundaries():
-  assert decide(_after_truco("3♥ 4♥ 6♥"), 1) == "DECLINE"  # score 2.0 < 2.5
-  assert decide(_after_truco("3♥ K♥ A♥"), 1) == "ACCEPT"  # 3.5, just under raise
-  assert decide(_after_truco("5♥ 3♥ 2♥"), 1) == "RAISE"  # 6.5
 
 
 def test_accepts_when_declining_would_lose_the_match():

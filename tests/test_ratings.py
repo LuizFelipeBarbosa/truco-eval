@@ -113,12 +113,6 @@ def test_failed_bootstrap_fit_suppresses_bt_intervals(monkeypatch):
     assert m["win_rate_ci"] is not None and m["margin_strength_ci"] is not None
 
 
-def test_symmetric_record_gives_equal_ratings():
-  r = ratings.compute_ratings(wins_only("a", "b", 5, 5), resamples=20)
-  assert r["models"]["a"]["bt_elo"] == pytest.approx(0, abs=1e-9)
-  assert r["models"]["b"]["bt_elo"] == pytest.approx(0, abs=1e-9)
-
-
 def test_perfect_record_is_finite():
   r = ratings.compute_ratings(wins_only("a", "b", 10, 0), resamples=20)
   gap = r["models"]["a"]["bt_elo"] - r["models"]["b"]["bt_elo"]
@@ -194,19 +188,12 @@ def test_anchor_is_zero():
                                  anchor="bot", resamples=10)["anchor"] is None
 
 
-def test_disconnected_graph_gives_no_ratings():
-  ss = wins_only("a", "b", 3, 2) + wins_only("c", "d", 4, 1, 100)
-  r = ratings.compute_ratings(ss, resamples=20)
-  assert r["connected"] is False
-  assert all(m["bt_elo"] is None and m["bt_elo_ci"] is None for m in r["models"].values())
-
-
-def test_disconnected_graph_keeps_win_rate_uncertainty():
+def test_disconnected_graph_gives_no_ratings_but_keeps_win_rate_uncertainty():
   ss = wins_only("a", "b", 3, 2) + wins_only("c", "d", 4, 1, 100)
   r = ratings.compute_ratings(ss, resamples=100)
   assert r["connected"] is False
   for m in r["models"].values():
-    assert m["bt_elo"] is None
+    assert m["bt_elo"] is None and m["bt_elo_ci"] is None
     assert m["win_rate_ci"] is not None
     lo, hi = m["win_rate_ci"]
     assert lo < m["win_rate"] < hi

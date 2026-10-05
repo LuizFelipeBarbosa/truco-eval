@@ -322,11 +322,8 @@ def compute_ratings(
       wr_s[k].append(wn / n)
 
   complete_pairs = collections.Counter()
-  matches = collections.Counter()
   for (x, y), units in units_by_pair.items():
     for u in units:
-      matches[x] += len(u["matches"])
-      matches[y] += len(u["matches"])
       if u["complete"]:
         complete_pairs[x] += 1
         complete_pairs[y] += 1
@@ -334,7 +331,7 @@ def compute_ratings(
   models = {}
   for l in all_labels:
     models[l] = {
-        "matches": matches[l],
+        "matches": record[l][1] if l in record else 0,
         "complete_pairs": complete_pairs[l],
         "win_rate": (record[l][0] / record[l][1]) if record.get(l) and record[l][1] else None,
         "win_rate_ci": _ci(wr_s.get(l, [])),
