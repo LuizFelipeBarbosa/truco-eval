@@ -1,3 +1,7 @@
+"""Tournament reports and resume behavior using only local bots and stubs."""
+
+from __future__ import annotations
+
 import json
 import os
 
@@ -31,6 +35,9 @@ def test_run_tournament_report_and_resume(tmp_path):
   assert h["bot0"]["bot1"]["matches"] == 4
   assert h["bot0"]["bot1"]["wins"] + h["bot1"]["bot0"]["wins"] == 4
   assert os.path.exists(os.path.join(str(tmp_path), "tournament.json"))
+  with open(os.path.join(str(tmp_path), "tournament.json"), encoding="utf-8") as f:
+    assert json.load(f)["code_version"] == rep["code_version"]
+  assert len(rep["code_version"]["source_sha256"]) == 64
   assert "Head-to-head" in tournament.format_report(rep)
   assert "ratings" in rep and all("bt_elo" in r for r in rep["standings"])
   assert "BT Elo" in tournament.format_report(rep)
@@ -44,6 +51,37 @@ def test_run_tournament_report_and_resume(tmp_path):
   tournament.run_tournament(BOTS, seeds=[0, 1, 2], out_root=str(tmp_path), duplicate=True,
                             progress=lambda m: None, play_fn=counting)
   assert sorted(set(calls)) == ["seed2_dup", "seed2_orig"] and len(calls) == 6
+
+
+def test_run_tournament_interleaves_each_pair_before_next_pair(tmp_path):
+  models = [ModelConfig(kind="random", label=f"bot{i}") for i in range(3)]
+  calls = []
+
+  def recording(spec):
+    calls.append((spec.seed, spec.team_a.display, spec.team_b.display, spec.swap))
+    return {
+        "match_id": spec.match_id,
+        "seed": spec.seed,
+        "swap": spec.swap,
+        "winner_team": "A",
+        "team_config": {"A": spec.config_for_team("A").to_dict(),
+                         "B": spec.config_for_team("B").to_dict()},
+        "winner_config": spec.team_a.display,
+        "scores": {"A": 12, "B": 0},
+        "hands_played": 1,
+        "team_stats": {"A": {"cost_usd": 0.0}, "B": {"cost_usd": 0.0}},
+    }
+
+  tournament.run_tournament(models, seeds=[1, 2], out_root=str(tmp_path), parallel=1,
+                            progress=lambda m: None, play_fn=recording)
+  assert calls == [
+      (1, "bot0", "bot1", False), (1, "bot0", "bot1", True),
+      (1, "bot0", "bot2", False), (1, "bot0", "bot2", True),
+      (1, "bot1", "bot2", False), (1, "bot1", "bot2", True),
+      (2, "bot0", "bot1", False), (2, "bot0", "bot1", True),
+      (2, "bot0", "bot2", False), (2, "bot0", "bot2", True),
+      (2, "bot1", "bot2", False), (2, "bot1", "bot2", True),
+  ]
 
 
 def test_heuristic_anchors_ratings(tmp_path):

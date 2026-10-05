@@ -206,37 +206,69 @@ def now_iso() -> str:
   return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
-def merge_all() -> None:
-  """Merged leaderboard over every run; later runs win, only complete orig+dup pairs count."""
+def merge_all(runs_root: str | None = None) -> dict[str, Any]:
+  """Merge runs; later copies win, only complete pairs count, and exclusions are reported."""
   from runner import tournament  # pylint: disable=import-outside-toplevel
   from runner.config import ModelConfig  # pylint: disable=import-outside-toplevel
+
+  root = RUNS if runs_root is None else runs_root
 
   def order(d: str) -> int:
     m = re.search(r"kaggle_cheap_rr(?:_v(\d+))?$", d)
     return int(m.group(1) or 1) if m else 0
 
-  dirs = sorted((d for d in glob.glob(os.path.join(RUNS, "kaggle_cheap_rr*")) if os.path.isdir(d)), key=order)
+  dirs = sorted(
+      (d for d in glob.glob(os.path.join(root, "kaggle_cheap_rr*")) if os.path.isdir(d)),
+      key=order)
   merged: dict[tuple[str, str], dict[str, Any]] = {}
+  sources: dict[tuple[str, str], str] = {}
+  superseded: list[dict[str, str]] = []
+  run_versions: list[dict[str, Any]] = []
   models: dict[str, dict[str, Any]] = {}
   for d in dirs:
+    run_name = os.path.basename(d)
     report = os.path.join(d, "truco_runs", "tournament.json")
     if os.path.exists(report):
-      for m in json.load(open(report, encoding="utf-8"))["models"]:
+      with open(report, encoding="utf-8") as report_file:
+        tournament_json = json.load(report_file)
+      run_versions.append({"run": run_name, "code_version": tournament_json.get("code_version")})
+      for m in tournament_json.get("models", []):
         models[m["display"]] = m
-    for f in glob.glob(os.path.join(d, "truco_runs", "*", "*", "summary.json")):
-      merged[(f.split("/")[-3], f.split("/")[-2])] = json.load(open(f, encoding="utf-8"))
+    else:
+      run_versions.append({"run": run_name, "code_version": None})
+    for summary_path in glob.glob(os.path.join(d, "truco_runs", "*", "*", "summary.json")):
+      key = (os.path.basename(os.path.dirname(os.path.dirname(summary_path))),
+             os.path.basename(os.path.dirname(summary_path)))
+      if key in merged:
+        superseded.append({"pairing": key[0], "match_id": key[1],
+                           "kept": run_name, "dropped": sources[key]})
+      with open(summary_path, encoding="utf-8") as summary_file:
+        merged[key] = json.load(summary_file)
+      sources[key] = run_name
   halves = collections.defaultdict(set)
   for pairing, match_id in merged:
     seed, half = match_id.split("_")
     halves[(pairing, seed)].add(half)
   balanced = [s for (pairing, match_id), s in merged.items()
               if halves[(pairing, match_id.split("_")[0])] == {"orig", "dup"}]
+  unpaired_excluded = [
+      {"pairing": pairing, "match_id": match_id, "run": sources[(pairing, match_id)]}
+      for pairing, match_id in merged
+      if halves[(pairing, match_id.split("_")[0])] != {"orig", "dup"}
+  ]
+  superseded.sort(key=lambda item: (item["pairing"], item["match_id"], item["dropped"]))
+  unpaired_excluded.sort(key=lambda item: (item["pairing"], item["match_id"], item["run"]))
   configs = [ModelConfig(**{k: v for k, v in m.items() if k != "display"}) for m in models.values()]
   report = tournament.build_report(configs, balanced)
-  with open(os.path.join(RUNS, "kaggle_cheap_rr_merged_tournament.json"), "w", encoding="utf-8") as f:
+  report["superseded"] = superseded
+  report["unpaired_excluded"] = unpaired_excluded
+  report["runs"] = run_versions
+  merged_report_path = os.path.join(root, "kaggle_cheap_rr_merged_tournament.json")
+  with open(merged_report_path, "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2, sort_keys=True, ensure_ascii=False)
   lines = [f"Merged Kaggle cheap round-robin, {now_iso()}: {len(balanced)} matches in complete "
-           f"orig+dup pairs ({len(merged) - len(balanced)} unpaired excluded), runs: "
+           f"orig+dup pairs ({len(unpaired_excluded)} unpaired excluded, {len(superseded)} "
+           f"superseded by later runs), runs: "
            f"{', '.join(os.path.basename(d) for d in dirs)}", "", tournament.format_report(report), "",
            "Bootstrap 95% CIs (resampling (pairing, seed) units):"]
   for r in report["standings"]:
@@ -248,9 +280,19 @@ def merge_all() -> None:
         lo, hi = r["bt_elo_ci"]
         line += f"   BT Elo {r['bt_elo']:+.0f} [{lo:+.0f}, {hi:+.0f}]"
       lines.append(line)
-  with open(os.path.join(RUNS, "kaggle_cheap_rr_leaderboard.txt"), "w", encoding="utf-8") as f:
+  if superseded:
+    lines.extend(["", "Superseded (later run kept):"])
+    lines.extend(f"  {s['pairing']} {s['match_id']}: kept {s['kept']}, dropped {s['dropped']}"
+                 for s in superseded)
+  if unpaired_excluded:
+    lines.extend(["", "Unpaired, excluded:"])
+    lines.extend(f"  {u['pairing']} {u['match_id']} ({u['run']})" for u in unpaired_excluded)
+  leaderboard_path = os.path.join(root, "kaggle_cheap_rr_leaderboard.txt")
+  with open(leaderboard_path, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
-  log(f"merged leaderboard: {len(balanced)} matches -> runs/kaggle_cheap_rr_leaderboard.txt")
+  log(f"merged leaderboard: {len(balanced)} matches, {len(superseded)} superseded -> "
+      f"{leaderboard_path}")
+  return report
 
 
 def main() -> int:

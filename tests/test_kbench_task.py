@@ -52,14 +52,147 @@ def test_budget_stops_new_matches_after_cap(tmp_path):
 
 
 def test_budget_counts_matches_in_flight():
-  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.3)
+  models = [ModelConfig(kind=KIND_RANDOM, label=l) for l in ("a", "b")]
+  spec = tournament.tournament_specs(models, seeds=[1], duplicate=True,
+                                     out_root="/tmp/truco-budget-test")[0]
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.3, paired=False)
   budget._in_flight = 3  # three matches running at the estimated $0.30 each
   with pytest.raises(kbench_task.BudgetExhausted):
-    budget.play_fn(None)
+    budget.play_fn(spec)
   budget._in_flight = 2
   budget._play = lambda spec: {"team_stats": {"A": {"cost_usd": 0.2}, "B": {"cost_usd": 0.1}}}
-  budget.play_fn(None)
+  budget.play_fn(spec)
   assert (budget.spent_usd, budget.finished, budget._in_flight) == (pytest.approx(0.3), 1, 2)
+
+
+def _budget_summary(spec, cost=0.3):
+  return {
+      "match_id": spec.match_id, "seed": spec.seed, "swap": spec.swap,
+      "winner_team": "A",
+      "team_stats": {"A": {"cost_usd": cost / 2}, "B": {"cost_usd": cost / 2}},
+      "team_config": {"A": spec.team_a.to_dict(), "B": spec.team_b.to_dict()},
+      "winner_config": spec.team_a.display, "scores": {"A": 12, "B": 0},
+      "hands_played": 1,
+  }
+
+
+def _budget_specs(tmp_path, *, seeds=(1,)):
+  models = [ModelConfig(kind=KIND_RANDOM, label=l) for l in ("a", "b", "c")]
+  return tournament.tournament_specs(models, seeds=seeds, duplicate=True,
+                                     out_root=str(tmp_path))
+
+
+def test_budget_refuses_original_when_only_one_match_is_affordable(tmp_path):
+  spec = _budget_specs(tmp_path)[0]
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6,
+                              play=lambda spec: _budget_summary(spec, 0.6))
+  with pytest.raises(kbench_task.BudgetExhausted):
+    budget.play_fn(spec)
+
+
+def test_budget_admits_reserved_duplicate_over_cap(tmp_path):
+  orig, dup = _budget_specs(tmp_path)[0:2]
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.5,
+                              play=lambda spec: _budget_summary(spec, 0.7))
+  budget.play_fn(orig)
+  assert budget.spent_usd == pytest.approx(0.7)
+  budget.play_fn(dup)
+  assert budget.spent_usd == pytest.approx(1.4)
+
+
+def test_budget_reservation_counts_against_later_original(tmp_path):
+  first_orig, first_dup, second_orig = _budget_specs(tmp_path)[0:3]
+  budget = kbench_task.Budget(0.8, initial_estimate_usd=0.3,
+                              play=lambda spec: _budget_summary(spec, 0.3))
+  budget.play_fn(first_orig)
+  with pytest.raises(kbench_task.BudgetExhausted):
+    budget.play_fn(second_orig)
+  budget.play_fn(first_dup)
+
+
+def test_budget_charges_failed_matches_and_refuses_failed_duplicate(tmp_path):
+  orig, dup = _budget_specs(tmp_path)[0:2]
+
+  def fails_with_cost(spec):
+    error = RuntimeError("failed")
+    error.cost_usd_so_far = 0.7
+    raise error
+
+  budget = kbench_task.Budget(2.0, initial_estimate_usd=0.4, play=fails_with_cost)
+  with pytest.raises(RuntimeError) as caught:
+    budget.play_fn(orig)
+  assert caught.value.cost_usd_so_far == pytest.approx(0.7)
+  assert (budget.spent_usd, budget.finished, budget.failed) == (pytest.approx(0.7), 0, 1)
+  assert budget.expected_match_usd() == pytest.approx(0.4)
+  with pytest.raises(kbench_task.BudgetExhausted, match="original.*failed"):
+    budget.play_fn(dup)
+
+  def succeeds(spec):
+    return _budget_summary(spec, 0.2)
+
+  def fails_without_cost(spec):
+    raise RuntimeError("failed")
+
+  budget = kbench_task.Budget(2.0, paired=False, play=succeeds)
+  budget.play_fn(orig)
+  budget._play = fails_without_cost
+  with pytest.raises(RuntimeError):
+    budget.play_fn(dup)
+  assert budget.spent_usd == pytest.approx(0.4)
+  assert budget.expected_match_usd() == pytest.approx(0.2)
+
+  budget = kbench_task.Budget(2.0, initial_estimate_usd=0.4, play=fails_without_cost)
+  with pytest.raises(RuntimeError):
+    budget.play_fn(orig)
+  assert budget.spent_usd == pytest.approx(0.4)
+  assert budget.expected_match_usd() == pytest.approx(0.4)
+
+
+@pytest.mark.parametrize("cost_usd_so_far", [0.7, None])
+def test_budget_failed_match_releases_in_flight_once(tmp_path, cost_usd_so_far):
+  spec, following = _budget_specs(tmp_path)[0:2]
+
+  def fails(spec):
+    error = RuntimeError("failed")
+    if cost_usd_so_far is not None:
+      error.cost_usd_so_far = cost_usd_so_far
+    raise error
+
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6, paired=False,
+                              play=fails)
+  with pytest.raises(RuntimeError):
+    budget.play_fn(spec)
+  assert budget._in_flight == 0
+  assert budget.failed == 1
+
+  budget._play = lambda spec: _budget_summary(spec, 0.2)
+  with pytest.raises(kbench_task.BudgetExhausted):
+    budget.play_fn(following)
+
+
+def test_budget_paired_false_keeps_one_match_admission(tmp_path):
+  orig, dup = _budget_specs(tmp_path)[0:2]
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6, paired=False,
+                              play=lambda spec: _budget_summary(spec, 0.6))
+  budget.play_fn(orig)
+  with pytest.raises(kbench_task.BudgetExhausted):
+    budget.play_fn(dup)
+
+
+def test_budget_tournament_cutoff_keeps_played_pairs_complete(tmp_path):
+  models = [ModelConfig(kind=KIND_RANDOM, label=l) for l in ("a", "b", "c")]
+  played = []
+
+  def fake_play(spec):
+    played.append((spec.team_a.display, spec.team_b.display, spec.seed, spec.swap))
+    return _budget_summary(spec, 0.5)
+
+  budget = kbench_task.Budget(1.5, initial_estimate_usd=0.5, play=fake_play)
+  tournament.run_tournament(models, seeds=[1, 2], out_root=str(tmp_path), parallel=1,
+                            progress=lambda m: None, play_fn=budget.play_fn)
+  origs = {(a, b, seed) for a, b, seed, swap in played if not swap}
+  dups = {(a, b, seed) for a, b, seed, swap in played if swap}
+  assert origs <= dups
 
 
 def test_quick_preflight_skips_non_proxy_models():

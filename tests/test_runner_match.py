@@ -1,5 +1,7 @@
 """Full matches through the orchestrator with fake LLMs: isolation, logging, duplicates."""
 
+from __future__ import annotations
+
 import json
 import os
 
@@ -113,6 +115,31 @@ def test_transcript_contains_illegal_and_fallback_events_and_usage(tmp_path):
   assert identical and match.scores == summary["scores"]
 
 
+def test_failed_match_attaches_partial_cost_and_closes_transcript(tmp_path):
+  class RaisingAgent:
+    name = "raising"
+
+    def __init__(self):
+      self.calls = 0
+      self.random = truco_agents.RandomBotAgent()
+
+    def decide(self, observation, legal_actions, fallback_fn):
+      self.calls += 1
+      if self.calls == 2:
+        raise RuntimeError("agent failed")
+      return self.random.decide(observation, legal_actions, fallback_fn)
+
+  spec = make_spec(31, RANDOM_A, RANDOM_B, out_root=str(tmp_path))
+  agent = RaisingAgent()
+  with pytest.raises(RuntimeError) as caught:
+    play_match(spec, {seat: agent for seat in range(4)})
+  assert caught.value.cost_usd_so_far == pytest.approx(0.0)
+  transcript = os.path.join(spec.out_dir, "transcript.jsonl")
+  assert os.path.exists(transcript) and os.path.getsize(transcript) > 0
+  with open(transcript, encoding="utf-8") as f:
+    assert f.read()
+
+
 def test_talk_flows_from_model_to_engine_and_other_seats(tmp_path):
   spec = make_spec(2, RANDOM_A, RANDOM_B, out_root=str(tmp_path))
   agents, _, _ = _llm_agents(2)
@@ -159,6 +186,7 @@ def test_seat_map_records_slug_provider_and_options(tmp_path):
   summary = play_match(spec, agents)
   cfg = _events(spec.out_dir)[0]
   assert cfg["seats"]["0"]["slug"] == "openai/gpt-5-mini"
+  assert "code_version" in cfg and len(cfg["code_version"]["source_sha256"]) == 64
   assert cfg["seats"]["0"]["provider"] == {"order": ["OpenAI"]}
   assert cfg["seats"]["0"]["model_options"] == {"temperature": 0.2}
   assert cfg["seats"]["1"]["slug"] == "deepseek/deepseek-chat-v3.1"

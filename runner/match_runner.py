@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import openrouter_model
 from runner import agents as truco_agents
 from runner import prompts as truco_prompts
+from runner import version as truco_version
 from runner.config import MatchSpec, ModelConfig
 from runner.match_log import MatchLogger
 from truco.match import TrucoMatch, team_of
@@ -120,121 +121,130 @@ def play_match(
     verbose: bool = False,
 ) -> dict[str, Any]:
   """Play one full match and return its summary dict."""
-  seat_configs = spec.seat_configs()
-  if agents is None:
-    by_config: dict[int, truco_agents.Agent] = {}
-    agents = {}
-    for seat, cfg in seat_configs.items():
-      key = id(cfg)
-      if key not in by_config:
-        by_config[key] = cfg.build_agent()
-      agents[seat] = by_config[key]
+  logger: MatchLogger | None = None
+  team_stats: dict[str, dict[str, Any]] = {}
+  try:
+    seat_configs = spec.seat_configs()
+    if agents is None:
+      by_config: dict[int, truco_agents.Agent] = {}
+      agents = {}
+      for seat, cfg in seat_configs.items():
+        key = id(cfg)
+        if key not in by_config:
+          by_config[key] = cfg.build_agent()
+        agents[seat] = by_config[key]
 
-  engine = TrucoMatch(spec.seed, spec.num_players)
-  logger = MatchLogger(spec.out_dir)
-  seat_map = {
-      str(seat): {"team": team_of(seat), "agent": agents[seat].name, **cfg.to_dict()}
-      for seat, cfg in seat_configs.items()
-  }
-  logger.event({
-      "source": "runner", "type": "match_config", "match_id": spec.match_id,
-      "seed": spec.seed, "num_players": spec.num_players, "swap": spec.swap,
-      "seats": seat_map,
-      "system_instruction": truco_prompts.SYSTEM_INSTRUCTION,
-  })
-  logger.replay(f"=== Match {spec.match_id} — seed {spec.seed}, N={spec.num_players}, swap={spec.swap} ===")
-  for seat, cfg in seat_configs.items():
-    logger.replay(f"seat {seat} (Team {team_of(seat)}): {cfg.display} provider={cfg.provider} "
-                  f"options={cfg.model_options}")
-  logger.flush_engine_events(engine)
-
-  team_stats = {"A": _new_stats(), "B": _new_stats()}
-  seat_stats = {s: _new_stats() for s in range(spec.num_players)}
-
-  while not engine.is_terminal():
-    seat = engine.current_actor()
-    obs = engine.observation(seat)
-    legal = engine.legal_actions(seat)
-    decision = agents[seat].decide(obs, legal, lambda s=seat: engine.random_legal_action(s))
-
-    for i, prompt in enumerate(decision.prompts):
-      if assert_isolation:
-        check_isolation(engine, seat, prompt["prompt_text"], obs["talk"],
-                        prompt.get("quoted_generation"))
-      gr = decision.generate_returns[i] if i < len(decision.generate_returns) else None
-      logger.event({
-          "source": "runner", "type": "prompt", "seat": seat, "hand": engine.hand_index,
-          "trick": engine.trick_index, "attempt": prompt["attempt"],
-          "decision_type": truco_prompts.decision_type_for(obs),
-          "model": seat_configs[seat].display, "prompt_text": prompt["prompt_text"],
-          "legal_actions": legal, "quoted_generation": prompt.get("quoted_generation"),
-      })
-      if gr is not None:
-        logger.event({
-            "source": "runner", "type": "response", "seat": seat, "hand": engine.hand_index,
-            "trick": engine.trick_index, "attempt": prompt["attempt"],
-            "model": seat_configs[seat].display,
-            "main_response": gr.main_response,
-            "main_response_and_thoughts": gr.main_response_and_thoughts,
-            "extracted_action": prompt["extracted_action"],
-            "matched_action": prompt["matched_action"],
-            "served_provider": openrouter_model.served_provider(gr),
-            "request_model": (gr.request_for_logging or {}).get("model"),
-            "request_provider": (gr.request_for_logging or {}).get("provider"),
-            "usage": {
-                "prompt_tokens": gr.prompt_tokens, "completion_tokens": gr.generation_tokens,
-                "reasoning_tokens": gr.reasoning_tokens, "total_tokens": gr.total_tokens,
-                "cost_usd": openrouter_model.served_cost(gr),
-            },
-            "duration_secs": gr.duration_success_only_secs,
-        })
-    for rec in decision.illegal:
-      logger.event({
-          "source": "runner", "type": "illegal_action", "seat": seat, "hand": engine.hand_index,
-          "trick": engine.trick_index, "attempt": rec["attempt"],
-          "raw_response": rec["raw_response"], "extracted_action": rec["extracted_action"],
-          "legal_actions": rec["legal_actions"],
-      })
-      logger.replay(f"    !! illegal reply from seat {seat} (attempt {rec['attempt']}): "
-                    f"extracted={rec['extracted_action']!r}")
-    if decision.source == "fallback":
-      logger.event({
-          "source": "runner", "type": "fallback_action", "seat": seat, "hand": engine.hand_index,
-          "trick": engine.trick_index, "action": decision.action, "legal_actions": legal,
-      })
-      logger.replay(f"    !! random fallback action for seat {seat}: {decision.action}")
+    engine = TrucoMatch(spec.seed, spec.num_players)
+    logger = MatchLogger(spec.out_dir)
+    seat_map = {
+        str(seat): {"team": team_of(seat), "agent": agents[seat].name, **cfg.to_dict()}
+        for seat, cfg in seat_configs.items()
+    }
     logger.event({
-        "source": "runner", "type": "decision", "seat": seat, "hand": engine.hand_index,
-        "trick": engine.trick_index, "action": decision.action, "talk": decision.talk,
-        "decision_source": decision.source,
+        "source": "runner", "type": "match_config", "match_id": spec.match_id,
+        "seed": spec.seed, "num_players": spec.num_players, "swap": spec.swap,
+        "seats": seat_map,
+        "system_instruction": truco_prompts.SYSTEM_INSTRUCTION,
+        "code_version": truco_version.code_version(),
     })
-    _tally(team_stats[team_of(seat)], decision.action, legal, decision)
-    _tally(seat_stats[seat], decision.action, legal, decision)
-
-    engine.apply_action(seat, decision.action, decision.talk)
+    logger.replay(f"=== Match {spec.match_id} — seed {spec.seed}, N={spec.num_players}, swap={spec.swap} ===")
+    for seat, cfg in seat_configs.items():
+      logger.replay(f"seat {seat} (Team {team_of(seat)}): {cfg.display} provider={cfg.provider} "
+                    f"options={cfg.model_options}")
     logger.flush_engine_events(engine)
-    if verbose:
-      print(f"[{spec.match_id}] hand {engine.hand_index} seat {seat} -> {decision.action}"
-            f" ({decision.source}) score {engine.scores}")
 
-  summary = {
-      "match_id": spec.match_id,
-      "seed": spec.seed,
-      "num_players": spec.num_players,
-      "swap": spec.swap,
-      "winner_team": engine.winner,
-      "winner_config": spec.config_for_team(engine.winner).display,
-      "scores": dict(engine.scores),
-      "hands_played": len(engine.hand_history),
-      "hand_history": engine.hand_history,
-      "team_config": {t: spec.config_for_team(t).to_dict() for t in ("A", "B")},
-      "team_stats": {t: _finalize_stats(s) for t, s in team_stats.items()},
-      "seat_stats": {str(s): _finalize_stats(st) for s, st in seat_stats.items()},
-      "engine_event_count": len(engine.events),
-      "out_dir": spec.out_dir,
-  }
-  logger.close(engine, summary)
-  return summary
+    team_stats = {"A": _new_stats(), "B": _new_stats()}
+    seat_stats = {s: _new_stats() for s in range(spec.num_players)}
+
+    while not engine.is_terminal():
+      seat = engine.current_actor()
+      obs = engine.observation(seat)
+      legal = engine.legal_actions(seat)
+      decision = agents[seat].decide(obs, legal, lambda s=seat: engine.random_legal_action(s))
+
+      for i, prompt in enumerate(decision.prompts):
+        if assert_isolation:
+          check_isolation(engine, seat, prompt["prompt_text"], obs["talk"],
+                          prompt.get("quoted_generation"))
+        gr = decision.generate_returns[i] if i < len(decision.generate_returns) else None
+        logger.event({
+            "source": "runner", "type": "prompt", "seat": seat, "hand": engine.hand_index,
+            "trick": engine.trick_index, "attempt": prompt["attempt"],
+            "decision_type": truco_prompts.decision_type_for(obs),
+            "model": seat_configs[seat].display, "prompt_text": prompt["prompt_text"],
+            "legal_actions": legal, "quoted_generation": prompt.get("quoted_generation"),
+        })
+        if gr is not None:
+          logger.event({
+              "source": "runner", "type": "response", "seat": seat, "hand": engine.hand_index,
+              "trick": engine.trick_index, "attempt": prompt["attempt"],
+              "model": seat_configs[seat].display,
+              "main_response": gr.main_response,
+              "main_response_and_thoughts": gr.main_response_and_thoughts,
+              "extracted_action": prompt["extracted_action"],
+              "matched_action": prompt["matched_action"],
+              "served_provider": openrouter_model.served_provider(gr),
+              "request_model": (gr.request_for_logging or {}).get("model"),
+              "request_provider": (gr.request_for_logging or {}).get("provider"),
+              "usage": {
+                  "prompt_tokens": gr.prompt_tokens, "completion_tokens": gr.generation_tokens,
+                  "reasoning_tokens": gr.reasoning_tokens, "total_tokens": gr.total_tokens,
+                  "cost_usd": openrouter_model.served_cost(gr),
+              },
+              "duration_secs": gr.duration_success_only_secs,
+          })
+      for rec in decision.illegal:
+        logger.event({
+            "source": "runner", "type": "illegal_action", "seat": seat, "hand": engine.hand_index,
+            "trick": engine.trick_index, "attempt": rec["attempt"],
+            "raw_response": rec["raw_response"], "extracted_action": rec["extracted_action"],
+            "legal_actions": rec["legal_actions"],
+        })
+        logger.replay(f"    !! illegal reply from seat {seat} (attempt {rec['attempt']}): "
+                      f"extracted={rec['extracted_action']!r}")
+      if decision.source == "fallback":
+        logger.event({
+            "source": "runner", "type": "fallback_action", "seat": seat, "hand": engine.hand_index,
+            "trick": engine.trick_index, "action": decision.action, "legal_actions": legal,
+        })
+        logger.replay(f"    !! random fallback action for seat {seat}: {decision.action}")
+      logger.event({
+          "source": "runner", "type": "decision", "seat": seat, "hand": engine.hand_index,
+          "trick": engine.trick_index, "action": decision.action, "talk": decision.talk,
+          "decision_source": decision.source,
+      })
+      _tally(team_stats[team_of(seat)], decision.action, legal, decision)
+      _tally(seat_stats[seat], decision.action, legal, decision)
+
+      engine.apply_action(seat, decision.action, decision.talk)
+      logger.flush_engine_events(engine)
+      if verbose:
+        print(f"[{spec.match_id}] hand {engine.hand_index} seat {seat} -> {decision.action}"
+              f" ({decision.source}) score {engine.scores}")
+
+    summary = {
+        "match_id": spec.match_id,
+        "seed": spec.seed,
+        "num_players": spec.num_players,
+        "swap": spec.swap,
+        "winner_team": engine.winner,
+        "winner_config": spec.config_for_team(engine.winner).display,
+        "scores": dict(engine.scores),
+        "hands_played": len(engine.hand_history),
+        "hand_history": engine.hand_history,
+        "team_config": {t: spec.config_for_team(t).to_dict() for t in ("A", "B")},
+        "team_stats": {t: _finalize_stats(s) for t, s in team_stats.items()},
+        "seat_stats": {str(s): _finalize_stats(st) for s, st in seat_stats.items()},
+        "engine_event_count": len(engine.events),
+        "out_dir": spec.out_dir,
+    }
+    logger.close(engine, summary)
+    return summary
+  except Exception as e:  # pylint: disable=broad-exception-caught
+    e.cost_usd_so_far = sum((s["cost_usd"] for s in team_stats.values()), 0.0)
+    if logger is not None:
+      logger.close_transcript()
+    raise
 
 
 def make_spec(seed: int, team_a: ModelConfig, team_b: ModelConfig, *, num_players: int = 4,

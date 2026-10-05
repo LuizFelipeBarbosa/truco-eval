@@ -44,6 +44,11 @@ class MatchLogger:
       self.event({"source": "engine", **e})
       self._replay_engine_event(e)
 
+  def close_transcript(self) -> None:
+    """Close the transcript stream; safe to call more than once."""
+    if self._transcript:
+      self._transcript.close()
+
   def _replay_engine_event(self, e: dict[str, Any]) -> None:
     t = e["type"]
     if t == "hand_start":
@@ -82,8 +87,7 @@ class MatchLogger:
                   f"after {e['hands_played']} hands ===")
 
   def close(self, engine: TrucoMatch, summary: dict[str, Any]) -> None:
-    if self._transcript:
-      self._transcript.close()
+    self.close_transcript()
     if not self.out_dir:
       return
     with open(os.path.join(self.out_dir, "engine_events.jsonl"), "w", encoding="utf-8") as f:
