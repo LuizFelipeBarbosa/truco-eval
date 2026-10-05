@@ -212,6 +212,71 @@ def test_bootstrap_incomplete_pairs_preserve_margin_reference():
       assert lo - 1e-9 <= value <= hi + 1e-9
 
 
+def _margin_bridge_only_on_seed_zero():
+  # a-b and c-d have a complete pair on every seed; the b-c bridge is complete
+  # only on seed 0 and orig-only elsewhere. A draw without seed 0 keeps b-c in
+  # the win graph but splits the complete-pair margin graph in two.
+  ss = []
+  for s in range(5):
+    ss += pair("a", "b", s, (12, 6 + s), (12, 8))
+    ss += pair("c", "d", s, (12, 9), (10 - s, 12))
+  ss += pair("b", "c", 0, (12, 9), (12, 10))
+  for s in range(1, 5):
+    ss.append(match("b", "c", s, False, 12, 7))
+  return ss
+
+
+def test_bootstrap_redraws_draws_that_disconnect_the_margin_graph():
+  ss = _margin_bridge_only_on_seed_zero()
+  r = ratings.compute_ratings(ss, resamples=200)
+  assert r["bootstrap"]["ms_failed_resamples"] == 0
+  assert r["bootstrap"]["bt_failed_resamples"] == 0
+  assert r["bootstrap"]["redraws"] > 0  # only the margin guard can trigger a redraw here
+  for label in ("a", "b", "c", "d"):
+    assert r["models"][label]["margin_strength"] is not None
+    assert r["models"][label]["margin_strength_ci"] is not None
+  assert ratings.compute_ratings(ss, resamples=200) == r
+
+
+def test_failed_margin_bootstrap_fit_suppresses_margin_intervals(monkeypatch):
+  monkeypatch.setattr(ratings, "MAX_BOOTSTRAP_REDRAWS", 0)
+  r = ratings.compute_ratings(_margin_bridge_only_on_seed_zero(), resamples=200)
+  # About a third of 5-seed draws miss seed 0, so their margin fits are disconnected.
+  assert r["bootstrap"]["ms_failed_resamples"] > 0
+  assert r["bootstrap"]["redraws"] == 0
+  assert r["bootstrap"]["bt_failed_resamples"] == 0
+  for label in ("a", "b", "c", "d"):
+    m = r["models"][label]
+    assert m["margin_strength"] is not None and m["margin_strength_ci"] is None
+    assert m["bt_elo_ci"] is not None and m["win_rate_ci"] is not None
+  models = [ModelConfig(kind="random", label=l) for l in ("a", "b", "c", "d")]
+  rep = tournament.build_report(models, _margin_bridge_only_on_seed_zero())
+  failed = rep["ratings"]["bootstrap"]["ms_failed_resamples"]
+  assert failed > 0
+  assert (f"Margin confidence intervals unavailable: {failed} bootstrap fit(s) did not "
+          "converge or were disconnected.") in tournament.format_report(rep)
+
+
+def test_bootstrap_replicate_missing_a_model_suppresses_bt_intervals(monkeypatch):
+  # c plays only on seed 0; a draw without seed 0 drops c while a-b stays connected,
+  # so its BT fit succeeds on a subset of the rated models.
+  ss = []
+  for s in range(5):
+    ss += pair("a", "b", s, (12, 6 + s), (8, 12))
+  ss += pair("b", "c", 0, (12, 9), (12, 10))
+  monkeypatch.setattr(ratings, "MAX_BOOTSTRAP_REDRAWS", 0)
+  r = ratings.compute_ratings(ss, resamples=200)
+  assert r["fit_status"] == "converged"
+  assert r["bootstrap"]["redraws"] == 0
+  assert r["bootstrap"]["bt_failed_resamples"] > 0
+  assert r["bootstrap"]["ms_failed_resamples"] == r["bootstrap"]["bt_failed_resamples"]
+  assert r["tiers"] is None and r["tier_separation"] is None
+  for label in ("a", "b", "c"):
+    m = r["models"][label]
+    assert m["bt_elo"] is not None and m["bt_elo_ci"] is None
+    assert m["margin_strength"] is not None and m["margin_strength_ci"] is None
+
+
 def test_labels_without_matches_are_reported_as_none():
   r = ratings.compute_ratings(wins_only("a", "b", 3, 2), labels=["z", "a", "b"], resamples=10)
   assert list(r["models"]) == ["z", "a", "b"]

@@ -173,8 +173,12 @@ graph makes BT ratings unavailable, but does not suppress raw win-rate CIs. The
 Bradley–Terry solver is a safeguarded Newton iteration and reports
 `fit_status`: if it does not converge, no unfinished point estimate is
 published and the report says so instead. If any bootstrap replicate fails to
-fit, the BT CIs are suppressed and `ratings.bootstrap.bt_failed_resamples`
-records the count; win rates and margin strength are still reported.
+fit or omits a model, the BT CIs are suppressed and
+`ratings.bootstrap.bt_failed_resamples` records the count; win rates and margin
+strength are still reported. Margin CIs follow the same rule: draws that
+disconnect an otherwise connected graph of complete duplicate pairs are redrawn
+too, and if any replicate's margin fit still fails or omits a model, margin CIs
+are suppressed and `ratings.bootstrap.ms_failed_resamples` records the count.
 Ratings report tier boundaries when every tier ahead of the next is separated in
 at least 95% of joint BT Elo bootstrap replicates; order within a tier is not
 significant. Tiers are unavailable when BT is unavailable or a bootstrap fit

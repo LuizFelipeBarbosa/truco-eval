@@ -244,6 +244,10 @@ def format_report(report: dict[str, Any]) -> str:
       lines.append("Ratings unavailable: Bradley–Terry solver did not converge.")
     else:
       lines.append("Ratings unavailable: comparison graph is disconnected.")
+    if rat.get("bootstrap", {}).get("ms_failed_resamples", 0):
+      lines.append(
+          f"Margin confidence intervals unavailable: {rat['bootstrap']['ms_failed_resamples']} "
+          "bootstrap fit(s) did not converge or were disconnected.")
   lines.append("")
   lines.append("Head-to-head win rate (row beats column), matches in parentheses:")
   cw = max(w, 12)

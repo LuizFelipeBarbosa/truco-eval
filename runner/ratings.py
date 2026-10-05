@@ -17,8 +17,10 @@ An ``anchor`` candidate is used at rating 0 only when it has at least
 otherwise ratings are mean-zero over the rated models. Uncertainty comes from a
 cluster bootstrap that resamples whole seeds across pairings: one sampled seed
 brings every pairing's unit for that seed, including incomplete units. A draw is
-redone when it drops a model or disconnects a connected full win graph, up to
-``MAX_BOOTSTRAP_REDRAWS`` redraws per replicate. The bootstrap RNG is seeded, so
+redone when it drops a model or disconnects a connected full win graph or a
+connected full complete-pair margin graph, up to ``MAX_BOOTSTRAP_REDRAWS`` redraws
+per replicate; if a replicate's BT or margin fit still fails or omits a model, that
+statistic's CIs are suppressed for every model. The bootstrap RNG is seeded, so
 a report is a pure function of its summaries. Tiers are boundaries whose joint
 BT Elo ordering is separated with confidence ``TIER_CONFIDENCE``: for each cut,
 the minimum Elo in the upper segment must exceed the maximum Elo in the lower
@@ -336,6 +338,11 @@ def compute_ratings(
   bt_replicates: list[dict[str, float]] = []
   rng = random.Random(seed)
   bt_failed_resamples = 0
+  ms_failed_resamples = 0
+  # Margin graph over complete pairs only; incomplete units keep a pairing in the
+  # win graph but not in the margin fit, so it needs its own connectivity check.
+  ms_nodes = sorted({p for x, y, _ in margins for p in (x, y)})
+  ms_connected = _connected(ms_nodes, [(x, y) for x, y, _ in margins])
 
   all_seeds = sorted({unit["seed"] for units in units_by_pair.values() for unit in units})
   units_by_seed: dict[int, list[tuple[Pair, dict[str, Any]]]] = collections.defaultdict(list)
@@ -361,7 +368,10 @@ def compute_ratings(
       sample_seen = {label for pair, units in sample.items() if units for label in pair}
       sample_connected = _connected(
           seen, [pair for pair, units in sample.items() if units])
-      valid = set(seen).issubset(sample_seen) and (not connected or sample_connected)
+      sample_ms_connected = _connected(
+          ms_nodes, [pair for pair, units in sample.items() if any(u["complete"] for u in units)])
+      valid = (set(seen).issubset(sample_seen) and (not connected or sample_connected)
+               and (not ms_connected or sample_ms_connected))
       if valid or redraws_for_replicate >= MAX_BOOTSTRAP_REDRAWS:
         break
       sample = draw_seed_sample()
@@ -370,14 +380,17 @@ def compute_ratings(
     w, rec, mg = _tally(sample)
     if logp is not None:
       sample_fit = fit_bradley_terry(w, init=logp, tol=1e-7)
-      if sample_fit is None:
+      if sample_fit is None or not set(logp) <= set(sample_fit):
         bt_failed_resamples += 1
       sample_bt = _anchored(sample_fit, used_anchor, ELO_PER_LOG)
       if sample_bt is not None:
         bt_replicates.append(sample_bt)
       for k, v in (sample_bt or {}).items():
         bt_s[k].append(v)
-    for k, v in (_anchored(fit_margin_strength(mg), used_anchor) or {}).items():
+    sample_ms = _anchored(fit_margin_strength(mg), used_anchor)
+    if ms is not None and (sample_ms is None or not set(ms) <= set(sample_ms)):
+      ms_failed_resamples += 1
+    for k, v in (sample_ms or {}).items():
       ms_s[k].append(v)
     for k, (wn, n) in rec.items():
       wr_s[k].append(wn / n)
@@ -430,7 +443,8 @@ def compute_ratings(
         "bt_elo_ci": (_ci(bt_s.get(l, [])) if bt is not None and l in bt
                       and bt_failed_resamples == 0 else None),
         "margin_strength": None if ms is None else ms.get(l),
-        "margin_strength_ci": _ci(ms_s.get(l, [])) if ms is not None and l in ms else None,
+        "margin_strength_ci": (_ci(ms_s.get(l, [])) if ms is not None and l in ms
+                               and ms_failed_resamples == 0 else None),
         "tier": tier_by_model.get(l),
     }
   return {
@@ -447,7 +461,7 @@ def compute_ratings(
                               for u in us if not u["complete"]),
       "bootstrap": {"resamples": resamples, "unit": "seed", "strata": None,
                     "seed": seed, "bt_failed_resamples": bt_failed_resamples,
-                    "redraws": redraws},
+                    "ms_failed_resamples": ms_failed_resamples, "redraws": redraws},
       "tier_confidence": TIER_CONFIDENCE,
       "tiers": tiers,
       "tier_separation": tier_separation,
