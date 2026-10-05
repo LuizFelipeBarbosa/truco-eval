@@ -41,7 +41,7 @@ _ensure_truco()
 import kaggle_benchmarks as kbench
 from runner import kbench_task
 from runner import tournament
-from runner.config import KIND_KBENCH, KIND_RANDOM, ModelConfig
+from runner.config import KIND_HEURISTIC, KIND_KBENCH, KIND_RANDOM, ModelConfig
 
 DRY_RUN = os.environ.get("TRUCO_DRY_RUN") == "1"
 MODELS = [
@@ -50,9 +50,11 @@ MODELS = [
     ModelConfig(kind=KIND_KBENCH, slug="gemini-3.5-flash-lite", label="gemini-3.5-flash-lite"),
     ModelConfig(kind=KIND_KBENCH, slug="gpt-5.4-nano-2026-03-17", label="gpt-5.4-nano"),
     ModelConfig(kind=KIND_KBENCH, slug="gpt-oss-20b", label="gpt-oss-20b"),
+    ModelConfig(kind=KIND_HEURISTIC, label="heuristic"),
 ]
 if DRY_RUN:
-  MODELS = [ModelConfig(kind=KIND_RANDOM, label=m.display) for m in MODELS]
+  MODELS = [ModelConfig(kind=KIND_RANDOM, label=m.display) if m.kind == KIND_KBENCH else m
+            for m in MODELS]
 # v1 played seeds 1-2 ($4.27), v2 seeds 3-4 ($4.01), v3 seeds 5-9 plus seed-10
 # originals ($9.52, 110 matches). v4 spends a full daily quota ($10): more seeds
 # than it can afford, and the budget stops starting matches once spend plus
@@ -73,7 +75,7 @@ def truco_cheap_round_robin(llm) -> dict:  # pylint: disable=unused-argument
   roster = [m for m in MODELS if m.display not in dropped]
   print(f"Roster: {[m.display for m in roster]}; dropped: {dropped}")
   kbench.assertions.assert_true(len(roster) >= 2,
-                                expectation="At least two models answer the preflight")
+                                expectation="At least two contestants are available after preflight")
   if len(roster) < 2:
     return {"dropped": dropped}
   budget = kbench_task.Budget(BUDGET_USD, initial_estimate_usd=EXPECTED_MATCH_USD)
@@ -89,6 +91,7 @@ def truco_cheap_round_robin(llm) -> dict:  # pylint: disable=unused-argument
       "matches_played": report["matches_played"],
       "standings": report["standings"],
       "head_to_head": report["head_to_head"],
+      "ratings": report["ratings"],
       "skipped_for_budget": len(report["failures"]) - len(failures),
       "failures": failures,
   }

@@ -1,11 +1,15 @@
 """Kaggle Benchmarks helpers: slug resolution and the tournament budget guard."""
 
+import runpy
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 from kbench_model import resolve_slug
 from runner import kbench_task
 from runner import tournament
-from runner.config import KIND_RANDOM, ModelConfig
+from runner.config import KIND_HEURISTIC, KIND_KBENCH, KIND_RANDOM, ModelConfig
 
 AVAILABLE = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "anthropic/claude-sonnet-5@default"]
 
@@ -59,7 +63,43 @@ def test_budget_counts_matches_in_flight():
 
 
 def test_quick_preflight_skips_non_proxy_models():
-  assert kbench_task.quick_preflight([ModelConfig(kind=KIND_RANDOM, label="r")]) == {}
+  assert kbench_task.quick_preflight([ModelConfig(kind=KIND_RANDOM, label="r"),
+                                     ModelConfig(kind=KIND_HEURISTIC)]) == {}
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_cheap_task_keeps_heuristic_and_returns_ratings(monkeypatch, dry_run):
+  import kaggle_benchmarks as kbench
+
+  calls = []
+
+  def task(**kwargs):
+    def decorate(fn):
+      fn.run = lambda llm: calls.append(llm)
+      return fn
+    return decorate
+
+  monkeypatch.setattr(kbench, "task", task)
+  monkeypatch.setenv("TRUCO_DRY_RUN", "1" if dry_run else "0")
+  monkeypatch.setattr(kbench_task, "quick_preflight", lambda models: {})
+  report = {"ratings": {"anchor": "heuristic"}, "standings": [],
+            "head_to_head": {}, "failures": [], "matches_played": 0}
+  monkeypatch.setattr(tournament, "run_tournament", lambda *args, **kwargs: report)
+  monkeypatch.setattr(tournament, "format_report", lambda report: "test report")
+  monkeypatch.setattr(kbench, "assertions", SimpleNamespace(
+      assert_true=lambda value, **kwargs: pytest.fail("roster unavailable") if not value else None,
+      assert_empty=lambda value, **kwargs: pytest.fail("match failures") if value else None))
+  path = Path(__file__).resolve().parents[1] / "kaggle_task" / "truco_cheap_rr.py"
+  namespace = runpy.run_path(str(path))
+  models = namespace["MODELS"]
+  assert len(calls) == 1
+  assert len(models) == 6
+  assert [(m.kind, m.display) for m in models if m.kind == KIND_HEURISTIC] == [
+      (KIND_HEURISTIC, "heuristic")]
+  expected = KIND_RANDOM if dry_run else KIND_KBENCH
+  assert sum(m.kind == expected for m in models) == 5
+  result = namespace["truco_cheap_round_robin"](None)
+  assert result["ratings"] is report["ratings"]
 
 
 class _FailingLLM:

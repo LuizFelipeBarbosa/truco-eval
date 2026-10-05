@@ -16,7 +16,7 @@ from runner.sampler import TrucoSampler
 class Decision:
   action: str
   talk: str | None = None
-  source: str = "model"  # "model" | "fallback" | "random_bot" | "scripted"
+  source: str = "model"  # "model" | "fallback" | "random_bot" | "heuristic_bot" | "scripted"
   prompts: list[dict[str, Any]] = dataclasses.field(default_factory=list)
   generate_returns: list[model_generation.GenerateReturn] = dataclasses.field(default_factory=list)
   illegal: list[dict[str, Any]] = dataclasses.field(default_factory=list)
