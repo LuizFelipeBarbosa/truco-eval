@@ -29,7 +29,7 @@ def _new_stats() -> dict[str, Any]:
       "responses": 0, "accepts": 0, "declines": 0, "raise_backs": 0,
       "mao_play": 0, "mao_forfeit": 0, "talk_lines": 0,
       "requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
-      "cost_usd": 0.0, "cost_known": True, "generation_secs": 0.0,
+      "cost_usd": 0.0, "cost_responses": 0, "cost_known": True, "generation_secs": 0.0,
       "providers": collections.Counter(),
   }
 
@@ -68,6 +68,7 @@ def _tally(stats: dict[str, Any], action: str, legal: list[str], decision: truco
     if cost is None:
       stats["cost_known"] = False
     else:
+      stats["cost_responses"] += 1
       stats["cost_usd"] += cost
     provider = openrouter_model.served_provider(gr)
     if provider:

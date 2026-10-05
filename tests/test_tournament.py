@@ -127,11 +127,18 @@ def test_heuristic_anchors_ratings(tmp_path):
             ModelConfig(kind="random", label="r2")]
   rep = tournament.run_tournament(models, seeds=[0, 1, 2], out_root=str(tmp_path),
                                   duplicate=True, progress=lambda m: None)
-  assert rep["ratings"]["anchor"] == "heuristic"
+  assert rep["ratings"]["anchor"] is None
+  assert rep["ratings"]["anchor_candidate"] == "heuristic"
+  assert rep["ratings"]["anchor_skipped"] is not None
   elo = {r["model"]: r["bt_elo"] for r in rep["standings"]}
-  assert elo["heuristic"] == 0
-  assert elo["r1"] < 0 and elo["r2"] < 0
+  assert sum(elo.values()) == 0
   assert rep["standings"][0]["model"] == "heuristic"
+  output = tournament.format_report(rep)
+  assert "tier" in output.splitlines()[1]
+  assert "zero-centred (mean of rated models)" in output
+  assert "heuristic not used as anchor" in output
+  assert "whole seeds across pairings" in output
+  assert "Tiers (each tier ahead of the next in ≥95%" in output
 
 
 def test_tournament_survives_failure(tmp_path):

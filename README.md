@@ -101,7 +101,7 @@ its partner is already winning), leads the middle card in trick 1 and its
 strongest later, and decides mão de onze from the average card value of its
 team's hands. The full rule list is the docstring of `runner/heuristic.py`. The
 thresholds are versioned: changing any of them changes the bot, and therefore
-the rating anchor of every result that includes it.
+the rating anchor once it has at least 20 complete pairs against every opponent.
 
 ## Round-robin tournaments
 
@@ -145,36 +145,48 @@ Per match:
 | `summary.json` | Winner, scores, hand-by-hand history, per-team and per-seat counters (decisions, illegal responses, fallbacks, folds, raise calls / opportunities, accept / decline / raise-back, mão de onze choices, tokens, cost, providers seen), and `code_version` (same shape as `match_config.code_version`). |
 
 `aggregate.json` and the table printed at the end give, per model configuration:
-match win rate, points per hand, hands per match, illegal-action rate (illegal
+match win rate, net points per hand (final score margin divided by hands
+played), hands per match, illegal-action rate (illegal
 replies per model decision), fallback rate, fold rate (folds per turn where a
 fold was legal), raise call rate (per turn where a raise was legal), accept /
 decline / raise-back rates (per raise response), mão de onze forfeit rate, talk
-rate, tokens and requests per match, and cost per match from OpenRouter's
-reported `usage.cost` (n/a if any response lacked it).
+rate, tokens and requests per match, priced-response coverage, and cost per match
+extrapolated from OpenRouter's reported `usage.cost`. Known cost is the sum of
+priced responses (a lower bound); values are n/a when no response carried a cost.
+The JSON keeps the gross `points_per_hand` field for compatibility; displayed
+tables use the net value.
 
 ### Ratings
 
 Tournament standings are sorted by a Bradley–Terry Elo fitted on match wins,
 which corrects for unequal schedules (not every model plays every other).
-The anchor is the heuristic bot at 0 when it is in the tournament, otherwise the
-mean of the rated models; each played pairing adds +0.5 pseudo-wins per side so
-sweeps stay finite. Margin strength is a least-squares fit of points per
+The heuristic is an anchor candidate, used at 0 only after it has at least 20
+complete duplicate pairs against every other rated model; otherwise ratings are
+mean-zero over the rated models. Each played pairing adds +0.5 pseudo-wins per
+side so sweeps stay finite. Margin strength is a least-squares fit of points per
 duplicate pair (the orig and dup score margins summed). 95% CIs come from a
-1000-resample bootstrap that resamples (pairing, seed) units within each pairing
-and completeness stratum (orig and dup share deals, so they move together;
-complete/incomplete counts stay fixed so both comparison graphs are preserved),
-with a fixed RNG seed so reports are deterministic. A disconnected graph makes
-BT ratings unavailable, but does not suppress raw win-rate CIs. The
+1000-resample bootstrap that resamples whole seeds across pairings (orig and dup
+share deals, and incomplete units move with their seed), with a fixed RNG seed
+so reports are deterministic. Draws that omit a model or disconnect an otherwise
+connected win graph are redrawn up to 100 times per replicate. A disconnected
+graph makes BT ratings unavailable, but does not suppress raw win-rate CIs. The
 Bradley–Terry solver is a safeguarded Newton iteration and reports
 `fit_status`: if it does not converge, no unfinished point estimate is
 published and the report says so instead. If any bootstrap replicate fails to
-fit, the BT CIs are suppressed and `ratings.bootstrap.bt_failed_resamples`
-records the count; win rates and margin strength are still reported.
-`tournament.json` holds these under `ratings`
-(method, anchor, connectivity, bootstrap settings, per-model fields), plus
-`bt_elo`, `bt_elo_ci`, `margin_strength`, `margin_strength_ci` and `win_rate_ci`
-on each standings row and `pairs`, `pair_margin_mean`, `pair_record` on each
-`head_to_head` cell.
+fit or omits a model, the BT CIs are suppressed and
+`ratings.bootstrap.bt_failed_resamples` records the count; win rates and margin
+strength are still reported. Margin CIs follow the same rule: draws that
+disconnect an otherwise connected graph of complete duplicate pairs are redrawn
+too, and if any replicate's margin fit still fails or omits a model, margin CIs
+are suppressed and `ratings.bootstrap.ms_failed_resamples` records the count.
+Ratings report tier boundaries when every tier ahead of the next is separated in
+at least 95% of joint BT Elo bootstrap replicates; order within a tier is not
+significant. Tiers are unavailable when BT is unavailable or a bootstrap fit
+fails. `tournament.json` holds these under `ratings` (method, anchor
+candidate and decision, connectivity, bootstrap settings, tier data and
+per-model fields), plus `bt_elo`, `bt_elo_ci`, `margin_strength`,
+`margin_strength_ci`, `win_rate_ci` and `tier` on each standings row and `pairs`,
+`pair_margin_mean`, `pair_record` on each `head_to_head` cell.
 
 ### Auditing a prompt
 

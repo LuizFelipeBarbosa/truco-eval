@@ -12,15 +12,20 @@ play (models dropped for a day, budget cut-offs mid-seed). This module fits:
   ``orig`` match plus X's margin in the ``dup`` match (same deals, seats
   swapped). Unit: points per duplicate pair.
 
-Ratings are anchored at ``anchor`` (rating 0) when given and rated, otherwise
-mean-zero over the rated models.
-
-Uncertainty comes from a cluster bootstrap. The unit is (pairing, seed): the
-``orig`` and ``dup`` matches of a seed share their deals, so they are resampled
-together. Resampling is stratified by pairing and completeness (each stratum
-keeps its number of units), preserving both the win and margin comparison graphs.
-The bootstrap
-RNG is seeded, so a report is a pure function of its summaries.
+An ``anchor`` candidate is used at rating 0 only when it has at least
+``MIN_ANCHOR_PAIRS`` complete duplicate pairs against every other rated model;
+otherwise ratings are mean-zero over the rated models. Uncertainty comes from a
+cluster bootstrap that resamples whole seeds across pairings: one sampled seed
+brings every pairing's unit for that seed, including incomplete units. A draw is
+redone when it drops a model or disconnects a connected full win graph or a
+connected full complete-pair margin graph, up to ``MAX_BOOTSTRAP_REDRAWS`` redraws
+per replicate; if a replicate's BT or margin fit still fails or omits a model, that
+statistic's CIs are suppressed for every model. The bootstrap RNG is seeded, so
+a report is a pure function of its summaries. Tiers are boundaries whose joint
+BT Elo ordering is separated with confidence ``TIER_CONFIDENCE``: for each cut,
+the minimum Elo in the upper segment must exceed the maximum Elo in the lower
+segment. A replicate missing a rated model is not separated, and tiers are
+unavailable when the point BT fit is unavailable or any bootstrap fit fails.
 """
 
 from __future__ import annotations
@@ -34,6 +39,9 @@ PRIOR_PSEUDO_WINS = 0.5
 ELO_PER_LOG = 400.0 / math.log(10.0)
 DEFAULT_RESAMPLES = 1000
 DEFAULT_BOOTSTRAP_SEED = 0
+MIN_ANCHOR_PAIRS = 20
+MAX_BOOTSTRAP_REDRAWS = 100
+TIER_CONFIDENCE = 0.95
 
 Pair = tuple[str, str]
 
@@ -278,6 +286,7 @@ def compute_ratings(
     labels: Sequence[str] = (),
     *,
     anchor: str | None = None,
+    min_anchor_pairs: int = MIN_ANCHOR_PAIRS,
     resamples: int = DEFAULT_RESAMPLES,
     seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> dict[str, Any]:
@@ -294,29 +303,94 @@ def compute_ratings(
   logp = fit_bradley_terry(wins)
   fit_status = ("converged" if logp is not None else "no_matches" if not seen
                 else "disconnected" if not connected else "not_converged")
-  if anchor is not None and anchor not in seen:
-    anchor = None
-  bt = _anchored(logp, anchor, ELO_PER_LOG)
-  ms = _anchored(fit_margin_strength(margins), anchor)
+  anchor_candidate = anchor
+  anchor_skipped: str | None = None
+  if anchor is None:
+    used_anchor = None
+  elif anchor not in seen:
+    used_anchor = None
+    anchor_skipped = "no matches"
+  else:
+    pair_counts = []
+    for opponent in seen:
+      if opponent == anchor:
+        continue
+      pair = tuple(sorted((anchor, opponent)))
+      count = sum(1 for unit in units_by_pair.get(pair, ()) if unit["complete"])
+      pair_counts.append((count, opponent))
+    if not pair_counts:
+      used_anchor = None
+      anchor_skipped = "no matches"
+    else:
+      fewest, opponent = min(pair_counts, key=lambda item: (item[0], item[1]))
+      if fewest < min_anchor_pairs:
+        used_anchor = None
+        anchor_skipped = (f"fewer than {min_anchor_pairs} complete pairs vs "
+                          f"{opponent} ({fewest})")
+      else:
+        used_anchor = anchor
+  bt = _anchored(logp, used_anchor, ELO_PER_LOG)
+  ms = _anchored(fit_margin_strength(margins), used_anchor)
 
   bt_s: dict[str, list[float]] = collections.defaultdict(list)
   ms_s: dict[str, list[float]] = collections.defaultdict(list)
   wr_s: dict[str, list[float]] = collections.defaultdict(list)
+  bt_replicates: list[dict[str, float]] = []
   rng = random.Random(seed)
   bt_failed_resamples = 0
-  strata = {k: [[u for u in units_by_pair[k] if u["complete"] == complete]
-                for complete in (True, False)] for k in sorted(units_by_pair)}
+  ms_failed_resamples = 0
+  # Margin graph over complete pairs only; incomplete units keep a pairing in the
+  # win graph but not in the margin fit, so it needs its own connectivity check.
+  ms_nodes = sorted({p for x, y, _ in margins for p in (x, y)})
+  ms_connected = _connected(ms_nodes, [(x, y) for x, y, _ in margins])
+
+  all_seeds = sorted({unit["seed"] for units in units_by_pair.values() for unit in units})
+  units_by_seed: dict[int, list[tuple[Pair, dict[str, Any]]]] = collections.defaultdict(list)
+  for pair, units in units_by_pair.items():
+    for unit in units:
+      units_by_seed[unit["seed"]].append((pair, unit))
+
+  def draw_seed_sample() -> dict[Pair, list[dict[str, Any]]]:
+    sample: dict[Pair, list[dict[str, Any]]] = collections.defaultdict(list)
+    if not all_seeds:
+      return {}
+    for _ in all_seeds:
+      drawn_seed = rng.choice(all_seeds)
+      for pair, unit in units_by_seed[drawn_seed]:
+        sample[pair].append(unit)
+    return dict(sample)
+
+  redraws = 0
   for _ in range(resamples):
-    sample = {k: [rng.choice(group) for group in groups for _ in group]
-              for k, groups in strata.items()}
+    sample = draw_seed_sample()
+    redraws_for_replicate = 0
+    while True:
+      sample_seen = {label for pair, units in sample.items() if units for label in pair}
+      sample_connected = _connected(
+          seen, [pair for pair, units in sample.items() if units])
+      sample_ms_connected = _connected(
+          ms_nodes, [pair for pair, units in sample.items() if any(u["complete"] for u in units)])
+      valid = (set(seen).issubset(sample_seen) and (not connected or sample_connected)
+               and (not ms_connected or sample_ms_connected))
+      if valid or redraws_for_replicate >= MAX_BOOTSTRAP_REDRAWS:
+        break
+      sample = draw_seed_sample()
+      redraws += 1
+      redraws_for_replicate += 1
     w, rec, mg = _tally(sample)
     if logp is not None:
       sample_fit = fit_bradley_terry(w, init=logp, tol=1e-7)
-      if sample_fit is None:
+      if sample_fit is None or not set(logp) <= set(sample_fit):
         bt_failed_resamples += 1
-      for k, v in (_anchored(sample_fit, anchor, ELO_PER_LOG) or {}).items():
+      sample_bt = _anchored(sample_fit, used_anchor, ELO_PER_LOG)
+      if sample_bt is not None:
+        bt_replicates.append(sample_bt)
+      for k, v in (sample_bt or {}).items():
         bt_s[k].append(v)
-    for k, v in (_anchored(fit_margin_strength(mg), anchor) or {}).items():
+    sample_ms = _anchored(fit_margin_strength(mg), used_anchor)
+    if ms is not None and (sample_ms is None or not set(ms) <= set(sample_ms)):
+      ms_failed_resamples += 1
+    for k, v in (sample_ms or {}).items():
       ms_s[k].append(v)
     for k, (wn, n) in rec.items():
       wr_s[k].append(wn / n)
@@ -327,6 +401,36 @@ def compute_ratings(
       if u["complete"]:
         complete_pairs[x] += 1
         complete_pairs[y] += 1
+
+  point_bt = bt or {}
+  tier_order = sorted(point_bt, key=lambda label: (-point_bt[label], label))
+  tier_separation: list[dict[str, Any]] | None = None
+  tiers: list[list[str]] | None = None
+  if bt is not None and bt_failed_resamples == 0:
+    tier_separation = []
+    boundaries: set[int] = set()
+    for cut in range(1, len(tier_order)):
+      top = set(tier_order[:cut])
+      rest = set(tier_order[cut:])
+      separated = 0
+      for replicate in bt_replicates:
+        if not all(label in replicate for label in tier_order):
+          continue
+        if min(replicate[label] for label in top) > max(replicate[label] for label in rest):
+          separated += 1
+      separation = separated / len(bt_replicates) if bt_replicates else 0.0
+      tier_separation.append({"after": tier_order[cut - 1], "separation": separation})
+      if separation >= TIER_CONFIDENCE:
+        boundaries.add(cut)
+    tiers = []
+    start = 0
+    for end in sorted((*boundaries, len(tier_order))):
+      tiers.append(tier_order[start:end])
+      start = end
+
+  tier_by_model: dict[str, int] = {}
+  for tier, tier_labels in enumerate(tiers or (), start=1):
+    tier_by_model.update({label: tier for label in tier_labels})
 
   models = {}
   for l in all_labels:
@@ -339,20 +443,28 @@ def compute_ratings(
         "bt_elo_ci": (_ci(bt_s.get(l, [])) if bt is not None and l in bt
                       and bt_failed_resamples == 0 else None),
         "margin_strength": None if ms is None else ms.get(l),
-        "margin_strength_ci": _ci(ms_s.get(l, [])) if ms is not None and l in ms else None,
+        "margin_strength_ci": (_ci(ms_s.get(l, [])) if ms is not None and l in ms
+                               and ms_failed_resamples == 0 else None),
+        "tier": tier_by_model.get(l),
     }
   return {
       "method": "bradley_terry",
       "scale": "elo",
-      "anchor": anchor,
+      "anchor": used_anchor,
+      "anchor_candidate": anchor_candidate,
+      "anchor_min_pairs": min_anchor_pairs,
+      "anchor_skipped": anchor_skipped,
       "prior_pseudo_wins": PRIOR_PSEUDO_WINS,
       "connected": connected,
       "fit_status": fit_status,
       "unpaired_matches": sum(len(u["matches"]) for us in units_by_pair.values()
                               for u in us if not u["complete"]),
-      "bootstrap": {"resamples": resamples, "unit": "pairing x seed",
-                    "strata": "pairing x completeness", "seed": seed,
-                    "bt_failed_resamples": bt_failed_resamples},
+      "bootstrap": {"resamples": resamples, "unit": "seed", "strata": None,
+                    "seed": seed, "bt_failed_resamples": bt_failed_resamples,
+                    "ms_failed_resamples": ms_failed_resamples, "redraws": redraws},
+      "tier_confidence": TIER_CONFIDENCE,
+      "tiers": tiers,
+      "tier_separation": tier_separation,
       "models": models,
       "head_to_head": _pairing_stats(units_by_pair),
   }

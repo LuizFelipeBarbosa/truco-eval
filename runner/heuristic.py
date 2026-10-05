@@ -2,7 +2,7 @@
 
 Uses only the seat's observation and legal actions; never the engine, never talk,
 never the fallback stream. Thresholds are versioned: changing any of them changes
-the rating anchor of every result that includes this bot.
+the rating anchor once it has at least 20 complete pairs against every opponent.
 
 Definitions
   s(c)       truco strength of card c under the current vira.

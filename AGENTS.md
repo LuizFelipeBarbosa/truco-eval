@@ -71,7 +71,7 @@ No linter or formatter is configured. Match the surrounding style by hand (see
 4. **Duplicate matches.**
    - `seed{N}_orig` and `seed{N}_dup` see identical deals with the teams swapped across seats.
    - Even seats (team A) lead hand 1 and win about 56% of matches. Only complete orig+dup pairs are seat-fair.
-   - Keep pair-level logic, such as margin and the bootstrap by (pairing, seed), pair-aware.
+   - Keep pair-level logic, such as margin, pair-aware; the bootstrap resamples whole seeds across pairings (orig and dup of a seed still move together).
 
 ### Benchmark-affecting changes
 
@@ -201,5 +201,4 @@ Fix these on purpose, not as a side effect of other work:
 - The live parser never matches suit words ("K of diamonds"): the harness strips spaces before `soft_match` runs. Parser tests call `soft_match` directly, so they miss this. Test through `TrucoSampler`.
 - Isolation is checked after the model replies, not before the prompt is sent (the README says "before").
 - `runner/match_runner.py` imports `openrouter_model` eagerly, which pulls in `requests`.
-- `stats.aggregate` blanks a model's cost if any single response lacked one.
 - `kaggle_task/daily.py` (unattended, and it deletes directories) and `kaggle_task/truco_pilot.py` (stale) have no tests.

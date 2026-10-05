@@ -176,13 +176,14 @@ def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
     rm = rat["models"].get(l, {})
     standings.append({
         **{k: rm.get(k) for k in ("bt_elo", "bt_elo_ci", "margin_strength",
-                                  "margin_strength_ci", "win_rate_ci")},
+                                  "margin_strength_ci", "win_rate_ci", "tier")},
         "model": l,
         "matches": cfg["matches"] if cfg else 0,
         "wins": cfg["wins"] if cfg else 0,
         "win_rate": cfg["match_win_rate"] if cfg else None,
-        "points_per_hand": cfg["points_per_hand"] if cfg else None,
+        "net_points_per_hand": cfg["net_points_per_hand"] if cfg else None,
         "illegal_action_rate": cfg["illegal_action_rate"] if cfg else None,
+        "cost_coverage": cfg["cost_coverage"] if cfg else None,
         "cost_per_match_usd": cfg["estimated_cost_per_match_usd"] if cfg else None,
     })
   standings.sort(key=lambda r: (r["bt_elo"] is None, -(r["bt_elo"] or 0), -(r["win_rate"] or 0)))
@@ -204,34 +205,49 @@ def format_report(report: dict[str, Any]) -> str:
   lines = ["Standings (all matches):"]
   f = lambda v, fmt: ("n/a" if v is None else fmt.format(v))
   ci = lambda v, fmt: ("n/a" if v is None else f"[{fmt.format(v[0])}, {fmt.format(v[1])}]")
-  lines.append(f"  {'model':<{w}}  matches  wins  win rate  win-rate 95% CI  BT Elo  BT 95% CI"
-               "          margin/pair  pts/hand  illegal  $/match")
+  lines.append(f"  {'tier':>4}  {'model':<{w}}  matches  wins  win rate  win-rate 95% CI  BT Elo  BT 95% CI"
+               "          margin/pair  net/hand  illegal  $/match  priced")
   for r in report["standings"]:
-    lines.append(f"  {r['model']:<{w}}  {r['matches']:>7}  {r['wins']:>4}  {f(r['win_rate'], '{:8.3f}')}  "
+    tier = "n/a" if r.get("tier") is None else str(r["tier"])
+    lines.append(f"  {tier:>4}  {r['model']:<{w}}  {r['matches']:>7}  {r['wins']:>4}  {f(r['win_rate'], '{:8.3f}')}  "
                  f"{ci(r.get('win_rate_ci'), '{:.2f}'):>14}  {f(r.get('bt_elo'), '{:+.0f}'):>6}  "
                  f"{ci(r.get('bt_elo_ci'), '{:+.0f}'):>16}  {f(r.get('margin_strength'), '{:+.1f}'):>11}  "
-                 f"{f(r['points_per_hand'], '{:8.3f}')}  {f(r['illegal_action_rate'], '{:7.3f}')}  "
-                 f"{f(r['cost_per_match_usd'], '{:7.3f}')}")
+                 f"{f(r['net_points_per_hand'], '{:+7.3f}')}  {f(r['illegal_action_rate'], '{:7.3f}')}  "
+                 f"{f(r['cost_per_match_usd'], '{:7.3f}')}  {f(r['cost_coverage'], '{:.0%}')}")
   rat = report.get("ratings")
   if rat:
     status = rat.get("fit_status", "converged" if rat["connected"] else "disconnected")
     if status == "converged":
+      anchor_text = (f"anchor: {rat['anchor']}" if rat.get("anchor") is not None else
+                     "zero-centred (mean of rated models)")
+      if rat.get("anchor_skipped"):
+        anchor_text += (f"; {rat['anchor_candidate']} not used as anchor: "
+                        f"{rat['anchor_skipped']}")
       lines.append(
-          f"Ratings: Bradley–Terry Elo (anchor: {rat['anchor'] or 'mean of rated models'}, "
+          f"Ratings: Bradley–Terry Elo ({anchor_text}, "
           f"+{rat['prior_pseudo_wins']} pseudo-wins per side per pairing); 95% CIs from "
-          f"{rat['bootstrap']['resamples']} bootstrap resamples of (pairing, seed) units; "
+          f"{rat['bootstrap']['resamples']} bootstrap resamples of whole seeds across pairings; "
           f"margin = points per duplicate pair; {rat['unpaired_matches']} unpaired match(es) "
           "excluded from margin.")
       if rat["bootstrap"].get("bt_failed_resamples", 0):
         lines.append(
             f"BT confidence intervals unavailable: {rat['bootstrap']['bt_failed_resamples']} "
             "bootstrap fit(s) did not converge.")
+      if rat.get("tiers") is not None:
+        tier_text = " | ".join(
+            f"{number}: {', '.join(tier)}" for number, tier in enumerate(rat["tiers"], start=1))
+        lines.append("Tiers (each tier ahead of the next in ≥95% of bootstrap resamples; "
+                     f"order within a tier is not significant): {tier_text}")
     elif status == "no_matches":
       lines.append("Ratings unavailable: no matches.")
     elif status == "not_converged":
       lines.append("Ratings unavailable: Bradley–Terry solver did not converge.")
     else:
       lines.append("Ratings unavailable: comparison graph is disconnected.")
+    if rat.get("bootstrap", {}).get("ms_failed_resamples", 0):
+      lines.append(
+          f"Margin confidence intervals unavailable: {rat['bootstrap']['ms_failed_resamples']} "
+          "bootstrap fit(s) did not converge or were disconnected.")
   lines.append("")
   lines.append("Head-to-head win rate (row beats column), matches in parentheses:")
   cw = max(w, 12)
