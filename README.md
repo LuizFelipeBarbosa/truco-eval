@@ -108,7 +108,10 @@ the rating anchor once it has at least 20 complete pairs against every opponent.
 `tournament` plays every pairing of a list of models and is resumable: matches
 that already have a `summary.json` are skipped, so a run can be stopped and
 relaunched, extended with more seeds, or have failed matches replayed after a
-fix.
+fix. A resumed run first checks every existing `summary.json` against the
+current team settings (slug, provider, model and API options, re-prompts, label)
+and refuses to start if any differ; write changed settings to a new `--out`
+directory instead.
 
 ```bash
 uv run python -m runner.cli tournament --models-file models.json --seeds 100 --duplicate \
@@ -128,7 +131,8 @@ starts after its original finishes). The Kaggle `Budget` admits a pair as a
 unit: it starts an original only if the expected cost of both halves fits,
 always starts the duplicate of an admitted original, refuses the duplicate when
 its original was refused or failed, and charges failed matches at least the
-expected match cost.
+expected match cost. A match the budget refuses is not a failure: it is listed
+under `skipped` in `tournament.json`, with the reason, and not under `failures`.
 
 ## Interpreting the outputs
 

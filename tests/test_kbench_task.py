@@ -285,7 +285,7 @@ def test_cheap_task_keeps_heuristic_and_returns_ratings(monkeypatch, dry_run):
   monkeypatch.setenv("TRUCO_DRY_RUN", "1" if dry_run else "0")
   monkeypatch.setattr(kbench_task, "quick_preflight", lambda models: {})
   report = {"ratings": {"anchor": "heuristic"}, "standings": [],
-            "head_to_head": {}, "failures": [], "matches_played": 0}
+            "head_to_head": {}, "failures": [], "skipped": [], "matches_played": 0}
   monkeypatch.setattr(tournament, "run_tournament", lambda *args, **kwargs: report)
   monkeypatch.setattr(tournament, "format_report", lambda report: "test report")
   monkeypatch.setattr(kbench, "assertions", SimpleNamespace(
@@ -302,6 +302,42 @@ def test_cheap_task_keeps_heuristic_and_returns_ratings(monkeypatch, dry_run):
   assert sum(m.kind == expected for m in models) == 5
   result = namespace["truco_cheap_round_robin"](None)
   assert result["ratings"] is report["ratings"]
+
+
+def test_cheap_task_reports_budget_skips_from_current_or_legacy_report(monkeypatch):
+  import kaggle_benchmarks as kbench
+
+  def task(**kwargs):
+    def decorate(fn):
+      fn.run = lambda llm: None
+      return fn
+    return decorate
+
+  monkeypatch.setattr(kbench, "task", task)
+  monkeypatch.setenv("TRUCO_DRY_RUN", "1")
+  monkeypatch.setattr(kbench_task, "quick_preflight", lambda models: {})
+  report = {
+      "ratings": {}, "standings": [], "head_to_head": {}, "matches_played": 0,
+      "failures": [], "skipped": [{"match_id": "seed0_orig", "reason": "budget"}],
+  }
+  reports_seen = []
+  monkeypatch.setattr(tournament, "run_tournament", lambda *args, **kwargs: report)
+  monkeypatch.setattr(tournament, "format_report", lambda report: "test report")
+  monkeypatch.setattr(kbench, "assertions", SimpleNamespace(
+      assert_true=lambda value, **kwargs: None,
+      assert_empty=lambda value, **kwargs: reports_seen.append(value)))
+  path = Path(__file__).resolve().parents[1] / "kaggle_task" / "truco_cheap_rr.py"
+  namespace = runpy.run_path(str(path))
+  current_failures = report["failures"]
+  current = namespace["truco_cheap_round_robin"](None)
+  assert current["skipped_for_budget"] == 1
+  assert current["failures"] is current_failures and reports_seen[-1] is current_failures
+
+  report.pop("skipped")
+  report["failures"] = [{"error": "BudgetExhausted: budget cap"}]
+  legacy = namespace["truco_cheap_round_robin"](None)
+  assert legacy["skipped_for_budget"] == 1
+  assert legacy["failures"] == [] and reports_seen[-1] == []
 
 
 class _FailingLLM:

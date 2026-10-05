@@ -23,11 +23,12 @@ from typing import Any, Callable, Sequence
 
 from runner import match_runner
 from runner.config import KIND_KBENCH, MatchSpec, ModelConfig
+from runner.tournament import MatchSkipped
 
 _PROBE = "Reply with exactly: Final Answer: FOLD"
 
 
-class BudgetExhausted(RuntimeError):
+class BudgetExhausted(MatchSkipped):
   pass
 
 

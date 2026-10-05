@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 
 from runner import agents as truco_agents
 from runner.config import ModelConfig
+from runner.match_log import MatchLogger
+from runner import match_runner
 from runner.match_runner import IsolationViolation, make_spec, play_match, redact_talk
 from runner.replay import replay_file
 from tests.fake_model import FakeModel
@@ -28,6 +32,40 @@ def _llm_agents(seed=0, illegal_prob=0.0):
 def _events(out_dir, name="transcript.jsonl"):
   with open(os.path.join(out_dir, name), encoding="utf-8") as f:
     return [json.loads(l) for l in f if l.strip()]
+
+
+def test_match_runner_imports_without_openrouter_dependencies():
+  code = (
+      "import sys; "
+      "import runner.match_runner, runner.tournament, runner.kbench_task; "
+      "assert 'openrouter_model' not in sys.modules; "
+      "assert 'requests' not in sys.modules"
+  )
+  subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_base_exception_closes_transcript(tmp_path, monkeypatch):
+  class StopMatch(BaseException):
+    pass
+
+  class RaisingAgent:
+    name = "raising-base"
+
+    def decide(self, observation, legal_actions, fallback_fn):
+      raise StopMatch("stop")
+
+  instances = []
+
+  class RecordingLogger(MatchLogger):
+    def __init__(self, out_dir):
+      super().__init__(out_dir)
+      instances.append(self)
+
+  monkeypatch.setattr(match_runner, "MatchLogger", RecordingLogger)
+  spec = make_spec(30, RANDOM_A, RANDOM_B, out_root=str(tmp_path))
+  with pytest.raises(StopMatch):
+    play_match(spec, {seat: RaisingAgent() for seat in range(4)})
+  assert instances and instances[0]._transcript is None
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5])
@@ -117,7 +155,7 @@ def test_transcript_contains_illegal_and_fallback_events_and_usage(tmp_path):
   assert identical and match.scores == summary["scores"]
 
 
-def test_failed_match_attaches_partial_cost_and_closes_transcript(tmp_path):
+def test_failed_match_attaches_partial_cost_and_closes_transcript(tmp_path, monkeypatch):
   class RaisingAgent:
     name = "raising"
 
@@ -131,6 +169,14 @@ def test_failed_match_attaches_partial_cost_and_closes_transcript(tmp_path):
         raise RuntimeError("agent failed")
       return self.random.decide(observation, legal_actions, fallback_fn)
 
+  instances = []
+
+  class RecordingLogger(MatchLogger):
+    def __init__(self, out_dir):
+      super().__init__(out_dir)
+      instances.append(self)
+
+  monkeypatch.setattr(match_runner, "MatchLogger", RecordingLogger)
   spec = make_spec(31, RANDOM_A, RANDOM_B, out_root=str(tmp_path))
   agent = RaisingAgent()
   with pytest.raises(RuntimeError) as caught:
@@ -142,6 +188,17 @@ def test_failed_match_attaches_partial_cost_and_closes_transcript(tmp_path):
   assert last["source"] == "runner" and last["type"] == "match_error"
   assert last["match_id"] == "seed31_orig" and last["error"] == "RuntimeError: agent failed"
   assert last["cost_usd_so_far"] == pytest.approx(0.0) and last["hand"] == 0
+  assert instances and instances[0]._transcript is None
+
+
+def test_close_transcript_is_idempotent(tmp_path):
+  logger = MatchLogger(str(tmp_path))
+  logger.event({"source": "test", "type": "before_close"})
+  logger.close_transcript()
+  logger.close_transcript()
+  logger.event({"source": "test", "type": "after_close"})
+  logger.close_transcript()
+  assert logger._transcript is None
 
 
 def test_talk_flows_from_model_to_engine_and_other_seats(tmp_path):
