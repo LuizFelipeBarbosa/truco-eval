@@ -12,6 +12,7 @@ from typing import Any, Callable, Sequence
 
 from runner import ratings
 from runner import stats as truco_stats
+from runner import version as truco_version
 from runner.config import KIND_HEURISTIC, KIND_RANDOM, MatchSpec, ModelConfig
 from runner.match_runner import play_match
 
@@ -122,15 +123,24 @@ def run_tournament(
              f"({done[0]}/{len(specs)} done)")
     return s
 
-  # Interleave pairings so one slow model does not serialize the run.
-  todo.sort(key=lambda sp: (sp.seed, sp.swap))
-  if parallel > 1 and todo:
+  def _play_unit(unit: list[MatchSpec]):
+    return [_play(sp) for sp in unit]
+
+  # Interleave pairings so one slow model does not serialize the run. Each
+  # pending orig/dup pair is one unit that a single worker plays in order, so
+  # the original finishes before its duplicate starts: a pair-aware budget
+  # then never admits a duplicate ahead of an original it would refuse.
+  pair_key = lambda sp: (sp.seed, sp.team_a.display, sp.team_b.display)
+  todo.sort(key=lambda sp: (*pair_key(sp), sp.swap))
+  units = [list(g) for _, g in itertools.groupby(todo, key=pair_key)]
+  if parallel > 1 and units:
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as ex:
-      results = list(ex.map(_play, todo))
+      results = [r for rs in ex.map(_play_unit, units) for r in rs]
   else:
-    results = [_play(sp) for sp in todo]
+    results = [r for unit in units for r in _play_unit(unit)]
   summaries.extend(r for r in results if r is not None)
   report = build_report(models, summaries, failures)
+  report["code_version"] = truco_version.code_version()
   with open(os.path.join(out_root, "tournament.json"), "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2, sort_keys=True, ensure_ascii=False)
   return report
