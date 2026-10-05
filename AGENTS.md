@@ -198,7 +198,6 @@ way to tell versions apart, so keep these changes in commits of their own.
 
 Fix these on purpose, not as a side effect of other work:
 
-- The live parser never matches suit words ("K of diamonds"): the harness strips spaces before `soft_match` runs. Parser tests call `soft_match` directly, so they miss this. Test through `TrucoSampler`.
 - Isolation is checked after the model replies, not before the prompt is sent (the README says "before").
 - `runner/match_runner.py` imports `openrouter_model` eagerly, which pulls in `requests`.
 - `kaggle_task/daily.py` (unattended, and it deletes directories) and `kaggle_task/truco_pilot.py` (stale) have no tests.

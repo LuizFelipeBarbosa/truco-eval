@@ -203,7 +203,10 @@ Prompts are stateless single turns (system instruction = the rules text minus
 §13 plus the answer format; user message = observation + legal list). The
 observation already carries the full public history of the hand, all table
 talk, and the results of previous hands, so nothing is lost by not accumulating
-chat history. A model that answers illegally is re-prompted once with its own
+chat history. The action is read from the last `Final Answer:` line and matched
+to exactly one legal action; a card may be written as `PLAY K♦`, `K♦`, `KD`, or
+in words (`K of diamonds`, `Q de espadas`). A model that answers illegally is
+re-prompted once with its own
 previous reply quoted and the legal list repeated; a second illegal reply is
 replaced by a uniformly random legal action drawn from the engine's
 seed-derived fallback stream.
