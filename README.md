@@ -145,12 +145,16 @@ Per match:
 | `summary.json` | Winner, scores, hand-by-hand history, per-team and per-seat counters (decisions, illegal responses, fallbacks, folds, raise calls / opportunities, accept / decline / raise-back, mão de onze choices, tokens, cost, providers seen), and `code_version` (same shape as `match_config.code_version`). |
 
 `aggregate.json` and the table printed at the end give, per model configuration:
-match win rate, points per hand, hands per match, illegal-action rate (illegal
+match win rate, net points per hand (final score margin divided by hands
+played), hands per match, illegal-action rate (illegal
 replies per model decision), fallback rate, fold rate (folds per turn where a
 fold was legal), raise call rate (per turn where a raise was legal), accept /
 decline / raise-back rates (per raise response), mão de onze forfeit rate, talk
-rate, tokens and requests per match, and cost per match from OpenRouter's
-reported `usage.cost` (n/a if any response lacked it).
+rate, tokens and requests per match, priced-response coverage, and cost per match
+extrapolated from OpenRouter's reported `usage.cost`. Known cost is the sum of
+priced responses (a lower bound); values are n/a when no response carried a cost.
+The JSON keeps the gross `points_per_hand` field for compatibility; displayed
+tables use the net value.
 
 ### Ratings
 

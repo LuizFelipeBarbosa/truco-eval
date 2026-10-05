@@ -181,8 +181,9 @@ def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
         "matches": cfg["matches"] if cfg else 0,
         "wins": cfg["wins"] if cfg else 0,
         "win_rate": cfg["match_win_rate"] if cfg else None,
-        "points_per_hand": cfg["points_per_hand"] if cfg else None,
+        "net_points_per_hand": cfg["net_points_per_hand"] if cfg else None,
         "illegal_action_rate": cfg["illegal_action_rate"] if cfg else None,
+        "cost_coverage": cfg["cost_coverage"] if cfg else None,
         "cost_per_match_usd": cfg["estimated_cost_per_match_usd"] if cfg else None,
     })
   standings.sort(key=lambda r: (r["bt_elo"] is None, -(r["bt_elo"] or 0), -(r["win_rate"] or 0)))
@@ -205,13 +206,13 @@ def format_report(report: dict[str, Any]) -> str:
   f = lambda v, fmt: ("n/a" if v is None else fmt.format(v))
   ci = lambda v, fmt: ("n/a" if v is None else f"[{fmt.format(v[0])}, {fmt.format(v[1])}]")
   lines.append(f"  {'model':<{w}}  matches  wins  win rate  win-rate 95% CI  BT Elo  BT 95% CI"
-               "          margin/pair  pts/hand  illegal  $/match")
+               "          margin/pair  net/hand  illegal  $/match  priced")
   for r in report["standings"]:
     lines.append(f"  {r['model']:<{w}}  {r['matches']:>7}  {r['wins']:>4}  {f(r['win_rate'], '{:8.3f}')}  "
                  f"{ci(r.get('win_rate_ci'), '{:.2f}'):>14}  {f(r.get('bt_elo'), '{:+.0f}'):>6}  "
                  f"{ci(r.get('bt_elo_ci'), '{:+.0f}'):>16}  {f(r.get('margin_strength'), '{:+.1f}'):>11}  "
-                 f"{f(r['points_per_hand'], '{:8.3f}')}  {f(r['illegal_action_rate'], '{:7.3f}')}  "
-                 f"{f(r['cost_per_match_usd'], '{:7.3f}')}")
+                 f"{f(r['net_points_per_hand'], '{:+7.3f}')}  {f(r['illegal_action_rate'], '{:7.3f}')}  "
+                 f"{f(r['cost_per_match_usd'], '{:7.3f}')}  {f(r['cost_coverage'], '{:.0%}')}")
   rat = report.get("ratings")
   if rat:
     status = rat.get("fit_status", "converged" if rat["connected"] else "disconnected")
