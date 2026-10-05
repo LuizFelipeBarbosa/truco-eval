@@ -237,6 +237,101 @@ def test_collect_records_complete_pairs_and_merges(tmp_path, monkeypatch):
   assert len([call for call in calls if call["args"][:2] == ("kernels", "output")]) == 1
 
 
+def test_collect_resumes_at_first_seed_gap(tmp_path, monkeypatch):
+  module = _load_daily()
+  _patch_paths(module, monkeypatch, tmp_path)
+  state = _state(pending=_pending())
+  calls = []
+  _fake_kaggle(module, calls, monkeypatch,
+               output_writer=lambda path: _write_outputs(path, [11, 13], matches=4))
+  monkeypatch.setattr(module, "task_status", lambda: (4, "Completed"))
+  merged = []
+  monkeypatch.setattr(module, "merge_all", lambda: merged.append(True))
+
+  module.collect(state, dry_run=False)
+
+  assert state["next_seed"] == 12
+  assert state["consecutive_failures"] == 0
+  assert state["history"][0]["seeds_played"] == [11, 13]
+  assert merged == [True]
+
+
+def test_collect_moves_past_a_gap_at_the_runs_first_seed(tmp_path, monkeypatch):
+  module = _load_daily()
+  _patch_paths(module, monkeypatch, tmp_path)
+  state = _state(pending=_pending(seeds=list(range(12, 19))), next_seed=12)
+  calls = []
+  _fake_kaggle(module, calls, monkeypatch,
+               output_writer=lambda path: _write_outputs(path, range(13, 19), matches=12))
+  monkeypatch.setattr(module, "task_status", lambda: (4, "Completed"))
+  merged = []
+  monkeypatch.setattr(module, "merge_all", lambda: merged.append(True))
+
+  module.collect(state, dry_run=False)
+
+  assert state["next_seed"] == 19
+  assert state["consecutive_failures"] == 0
+  assert merged == [True]
+
+
+def test_collect_retries_a_later_gap_when_the_runs_first_seed_is_also_missing(tmp_path,
+                                                                             monkeypatch):
+  module = _load_daily()
+  _patch_paths(module, monkeypatch, tmp_path)
+  state = _state(pending=_pending(seeds=list(range(12, 19))), next_seed=12)
+  calls = []
+  _fake_kaggle(module, calls, monkeypatch, output_writer=lambda path: _write_outputs(
+      path, [seed for seed in range(12, 19) if seed not in (12, 14)], matches=10))
+  monkeypatch.setattr(module, "task_status", lambda: (4, "Completed"))
+  monkeypatch.setattr(module, "merge_all", lambda: None)
+
+  module.collect(state, dry_run=False)
+
+  assert state["next_seed"] == 14
+  assert state["consecutive_failures"] == 0
+
+
+def test_collect_retries_a_persistently_failing_seed_once(tmp_path, monkeypatch):
+  module = _load_daily()
+  _patch_paths(module, monkeypatch, tmp_path)
+  monkeypatch.setattr(module, "merge_all", lambda: None)
+  calls = []
+  # Seed 12 never completes; every other seed does.
+  _fake_kaggle(module, calls, monkeypatch, output_writer=lambda path: _write_outputs(
+      path, [seed for seed in range(11, 26) if seed != 12], matches=2))
+  state = _state()
+
+  launched = []
+  for number in (4, 5):
+    seeds = list(range(state["next_seed"], state["next_seed"] + module.SEEDS_PER_RUN))
+    launched.append(seeds)
+    state["pending"] = _pending(label=f"v{number}", seeds=seeds, task_version=number)
+    monkeypatch.setattr(module, "task_status", lambda number=number: (number, "Completed"))
+    module.collect(state, dry_run=False)
+
+  assert launched == [list(range(11, 18)), list(range(12, 19))]
+  assert state["next_seed"] == 19
+  assert state["consecutive_failures"] == 0
+
+
+def test_collect_advances_past_last_seed_when_all_played(tmp_path, monkeypatch):
+  module = _load_daily()
+  _patch_paths(module, monkeypatch, tmp_path)
+  state = _state(pending=_pending())
+  calls = []
+  _fake_kaggle(module, calls, monkeypatch,
+               output_writer=lambda path: _write_outputs(path, range(11, 18), matches=14))
+  monkeypatch.setattr(module, "task_status", lambda: (4, "Completed"))
+  merged = []
+  monkeypatch.setattr(module, "merge_all", lambda: merged.append(True))
+
+  module.collect(state, dry_run=False)
+
+  assert state["next_seed"] == 18
+  assert state["consecutive_failures"] == 0
+  assert merged == [True]
+
+
 def test_collect_failures_pause_after_two_orphan_runs(tmp_path, monkeypatch):
   module = _load_daily()
   _patch_paths(module, monkeypatch, tmp_path)

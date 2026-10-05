@@ -7,7 +7,10 @@ fixed hour. Each invocation:
 1. If a pushed run has finished, downloads its outputs into
    ``runs/kaggle_cheap_rr_v<N>/`` (Kaggle keeps only the latest version's
    output, so this must happen before the next push), advances the next seed
-   and rebuilds the merged leaderboard.
+   and rebuilds the merged leaderboard. The first requested seed after the
+   run's first seed without a complete orig+dup pair becomes the next seed, so
+   each gap is retried once; otherwise the next seed follows the last played
+   seed.
 2. If no run is pending and the daily quota has refilled, renders
    ``truco_cheap_rr.py`` with the next seeds and pushes it (a push runs it).
 
@@ -161,9 +164,23 @@ def collect(state: dict[str, Any], dry_run: bool) -> None:
                            "seeds_played": sorted(seeds), "collected_at": now_iso()})
   state["pending"] = None
   if ok:
-    state["next_seed"] = max(seeds) + 1
+    # The first gap after the run's first seed (a requested seed without a complete pair) is
+    # retried as the first seed of the next run; jumping past it would never retry it. The
+    # run's own first seed is never retried from here: it was either just retried or the start
+    # seed. Each run therefore starts at a strictly later seed, so every gap gets at most one
+    # retry and a seed that always fails cannot pin the job to the same window. Later seeds
+    # that get re-played are superseded in ``merge_all``, where later copies win.
+    missing = [seed for seed in pending["seeds"] if seed not in seeds]
+    retry = [seed for seed in missing if seed != pending["seeds"][0]]
+    if retry:
+      state["next_seed"] = retry[0]
+    else:
+      # Only requested seeds count: ``ok`` guarantees at least one, and an unrequested seed in
+      # the outputs must not move the checkpoint.
+      state["next_seed"] = max(seed for seed in seeds if seed in pending["seeds"]) + 1
     state["consecutive_failures"] = 0
-    log(f"{pending['label']}: {matches} matches, seeds {min(seeds)}-{max(seeds)}; next seed {state['next_seed']}")
+    log(f"{pending['label']}: {matches} matches, seeds played {sorted(seeds)}, "
+        f"missing {missing}; next seed {state['next_seed']}")
     merge_all()
   else:
     state["consecutive_failures"] += 1
