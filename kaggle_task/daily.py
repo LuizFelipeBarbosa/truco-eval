@@ -152,7 +152,11 @@ def collect(state: dict[str, Any], dry_run: bool) -> None:
   seeds = played_seeds(out)
   ok = bool(seeds & set(pending["seeds"]))
   report_path = os.path.join(out, "truco_runs", "tournament.json")
-  matches = json.load(open(report_path, encoding="utf-8"))["matches_played"] if os.path.exists(report_path) else 0
+  if os.path.exists(report_path):
+    with open(report_path, encoding="utf-8") as report_file:
+      matches = json.load(report_file)["matches_played"]
+  else:
+    matches = 0
   state["history"].append({**pending, "status": status, "matches": matches,
                            "seeds_played": sorted(seeds), "collected_at": now_iso()})
   state["pending"] = None
