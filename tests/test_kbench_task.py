@@ -190,6 +190,42 @@ def test_budget_refused_original_blocks_its_duplicate(tmp_path):
   assert (budget.spent_usd, budget.finished, budget.failed) == (0.0, 0, 0)
 
 
+def test_is_cap_refusal_classifies_every_budget_refusal(tmp_path):
+  orig, dup, second_orig, second_dup = _budget_specs(tmp_path)[0:4]
+  messages = {}
+
+  def fails(spec):
+    raise RuntimeError("failed")
+
+  budget = kbench_task.Budget(2.0, initial_estimate_usd=0.4, play=fails)
+  with pytest.raises(RuntimeError):
+    budget.play_fn(orig)
+  with pytest.raises(kbench_task.BudgetExhausted) as caught:
+    budget.play_fn(dup)
+  messages["orig_failed"] = str(caught.value)
+  budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6, play=fails)
+  with pytest.raises(kbench_task.BudgetExhausted) as caught:
+    budget.play_fn(second_orig)
+  messages["cap"] = str(caught.value)
+  with pytest.raises(kbench_task.BudgetExhausted) as caught:
+    budget.play_fn(second_dup)
+  messages["orig_not_started"] = str(caught.value)
+
+  assert "would exceed" in messages["cap"]
+  assert "not started (budget)" in messages["orig_not_started"]
+  assert "failed; duplicate" in messages["orig_failed"]
+  for name, message in messages.items():
+    expected = name != "orig_failed"
+    assert kbench_task.is_cap_refusal(message) is expected
+    # Legacy wheels report refusals as failures: "BudgetExhausted: <message>".
+    assert kbench_task.is_cap_refusal(f"BudgetExhausted: {message}") is expected
+  # The cap message of older wheels, before reservations were counted.
+  assert kbench_task.is_cap_refusal(
+      "BudgetExhausted: budget: $9.71 spent + 2 in flight would exceed $9.60")
+  assert not kbench_task.is_cap_refusal("BudgetExhausted: budget cap")
+  assert not kbench_task.is_cap_refusal("RuntimeError: boom")
+
+
 def test_budget_admits_duplicate_whose_original_it_never_saw(tmp_path):
   dup = _budget_specs(tmp_path)[1]
   budget = kbench_task.Budget(1.0, initial_estimate_usd=0.6,
