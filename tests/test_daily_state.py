@@ -385,16 +385,46 @@ def test_collect_drops_a_seed_whose_started_matches_always_fail(tmp_path, monkey
       capsys.readouterr().out)
 
 
-def test_collect_charges_every_incomplete_seed_without_a_report(tmp_path, monkeypatch):
+def test_collect_without_a_report_charges_only_started_seeds(tmp_path, monkeypatch):
   module = _load_daily()
-  # The kernel crashed or timed out before writing tournament.json.
-  state = _collect(module, monkeypatch, tmp_path,
-                   lambda path: _write_outputs(path, [11, 12, 13], report=False),
-                   retry_queue=_queue((5, 1)), next_seed=11)
+
+  # The kernel crashed or timed out before writing tournament.json: 11-13 completed, seed 14's
+  # original had started (a directory, no summary), and 15-17 never started.
+  def writer(path):
+    _write_outputs(path, [11, 12, 13], report=False)
+    _write_outputs(path, [14], kinds=("orig",), summaries=False, report=False)
+
+  state = _collect(module, monkeypatch, tmp_path, writer, retry_queue=_queue((5, 1)),
+                   next_seed=11)
 
   assert state["history"][0]["matches"] == 0
-  assert state["retry_queue"] == _queue((5, 1), (14, 1), (15, 1), (16, 1), (17, 1))
+  assert state["retry_queue"] == _queue((5, 1), (14, 1), (15, 0), (16, 0), (17, 0))
   assert state["next_seed"] == 18
+
+
+def test_two_partial_crashes_do_not_drop_seeds_that_never_started(tmp_path, monkeypatch):
+  module = _load_daily()
+  _patch_paths(module, monkeypatch, tmp_path)
+  monkeypatch.setattr(module, "merge_all", lambda: None)
+  calls = []
+  # Each run completes its first three seeds, then the kernel dies without a report.
+  completed = iter([[11, 12, 13], [14, 15, 16]])
+  _fake_kaggle(module, calls, monkeypatch, output_writer=lambda path: _write_outputs(
+      path, next(completed), report=False))
+  state = _state()
+
+  for number in (4, 5):
+    retries = [item["seed"] for item in state["retry_queue"]]
+    seeds = retries + list(range(state["next_seed"],
+                                 state["next_seed"] + module.SEEDS_PER_RUN - len(retries)))
+    state["pending"] = _pending(label=f"v{number}", seeds=seeds, task_version=number)
+    monkeypatch.setattr(module, "task_status", lambda number=number: (number, "Completed"))
+    module.collect(state, dry_run=False)
+
+  # v4 requested 11-17 and v5 requested 14-17 plus 18-20; nothing that never started is charged.
+  assert state["retry_queue"] == _queue((17, 0), (18, 0), (19, 0), (20, 0))
+  assert state["next_seed"] == 21
+  assert state["consecutive_failures"] == 0
 
 
 def test_collect_advances_past_last_seed_when_all_played(tmp_path, monkeypatch):

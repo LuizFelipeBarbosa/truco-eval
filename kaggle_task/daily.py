@@ -157,12 +157,13 @@ def classify_seeds(directory: str, report: dict[str, Any] | None,
 
   * ``complete``: some pairing has its orig+dup pair and the budget cap refused none of the
     seed's matches. Non-cap failures in other pairings stay excluded and are not retried.
-  * ``untouched``: the report exists, no match of the seed started (refused matches never
-    create a directory; failed ones do, via ``MatchLogger``) and it has no non-cap failure.
-    This is not limited to a run's tail: parallel admission can refuse an earlier unit and
-    admit a later one.
-  * ``attempted``: anything else, e.g. cut short by the cap after some matches started,
-    matches started without a complete pair, or no report (kernel crash or timeout).
+  * ``untouched``: no match of the seed started and it has no non-cap failure. A match
+    directory is the evidence of a start: ``MatchLogger`` creates it when the match begins,
+    and refused matches never create one. This holds with or without a report, so a kernel
+    crash or timeout does not charge the seeds it never reached. It is not limited to a run's
+    tail: parallel admission can refuse an earlier unit and admit a later one.
+  * ``attempted``: anything else, e.g. cut short by the cap after some matches started, or
+    matches started without a complete pair (including before a crash).
 
   Refusals are reported under ``skipped``; the Kaggle task runs the dataset wheels, which may
   predate that key and report them as ``failures`` prefixed ``BudgetExhausted: ``.
@@ -188,7 +189,7 @@ def classify_seeds(directory: str, report: dict[str, Any] | None,
   for seed in seeds:
     if seed in played and seed not in cap_refused:
       kinds[seed] = "complete"
-    elif report is not None and seed not in started and seed not in other_failed:
+    elif seed not in started and seed not in other_failed:
       kinds[seed] = "untouched"
     else:
       kinds[seed] = "attempted"
