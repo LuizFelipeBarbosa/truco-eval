@@ -8,9 +8,9 @@ fixed hour. Each invocation:
    ``runs/kaggle_cheap_rr_v<N>/`` (Kaggle keeps only the latest version's
    output, so this must happen before the next push), advances the next seed
    and rebuilds the merged leaderboard. The first requested seed after the
-   run's first seed without a complete orig+dup pair becomes the next seed, so
-   each gap is retried once; otherwise the next seed follows the last played
-   seed.
+   run's first seed that has no complete orig+dup pair, or that the task's
+   budget cut short, becomes the next seed, so each gap or truncated seed is
+   retried once; otherwise the next seed follows the last played seed.
 2. If no run is pending and the daily quota has refilled, renders
    ``truco_cheap_rr.py`` with the next seeds and pushes it (a push runs it).
 
@@ -134,6 +134,36 @@ def played_seeds(directory: str) -> set[int]:
   return {seed for (_, seed), kinds in halves.items() if kinds == {"orig", "dup"}}
 
 
+def load_report(directory: str) -> dict[str, Any] | None:
+  """The run's ``truco_runs/tournament.json``, or ``None`` if it was not written."""
+  path = os.path.join(directory, "truco_runs", "tournament.json")
+  if not os.path.exists(path):
+    return None
+  with open(path, encoding="utf-8") as f:
+    return json.load(f)
+
+
+def budget_refused_seeds(report: dict[str, Any] | None) -> set[int]:
+  """Seeds with at least one match the task's budget refused to start.
+
+  The task plays (seed, pairing) units in seed order and refuses everything after the budget
+  cap, so the lowest such seed is where the run was truncated. Refusals are reported under
+  ``skipped``; the Kaggle task runs the dataset wheels, which may predate that key and report
+  them as ``failures`` whose error starts with ``BudgetExhausted`` instead. Other failures are
+  not budget refusals.
+  """
+  if report is None:
+    return set()
+  entries = list(report.get("skipped") or [])
+  entries += [failure for failure in report.get("failures") or []
+              if str(failure.get("error", "")).startswith("BudgetExhausted")]
+  refused = set()
+  for entry in entries:
+    if m := re.fullmatch(r"seed(\d+)_(orig|dup)", str(entry.get("match_id", ""))):
+      refused.add(int(m.group(1)))
+  return refused
+
+
 def collect(state: dict[str, Any], dry_run: bool) -> None:
   pending = state["pending"]
   version, status = task_status()
@@ -154,24 +184,24 @@ def collect(state: dict[str, Any], dry_run: bool) -> None:
   kaggle("kernels", "output", KERNEL, "-p", out, timeout=1800)
   seeds = played_seeds(out)
   ok = bool(seeds & set(pending["seeds"]))
-  report_path = os.path.join(out, "truco_runs", "tournament.json")
-  if os.path.exists(report_path):
-    with open(report_path, encoding="utf-8") as report_file:
-      matches = json.load(report_file)["matches_played"]
-  else:
-    matches = 0
+  report = load_report(out)
+  matches = report["matches_played"] if report is not None else 0
   state["history"].append({**pending, "status": status, "matches": matches,
                            "seeds_played": sorted(seeds), "collected_at": now_iso()})
   state["pending"] = None
   if ok:
-    # The first gap after the run's first seed (a requested seed without a complete pair) is
-    # retried as the first seed of the next run; jumping past it would never retry it. The
-    # run's own first seed is never retried from here: it was either just retried or the start
-    # seed. Each run therefore starts at a strictly later seed, so every gap gets at most one
-    # retry and a seed that always fails cannot pin the job to the same window. Later seeds
-    # that get re-played are superseded in ``merge_all``, where later copies win.
+    # The first seed after the run's first seed that is a gap (no complete pair in any
+    # pairing) or that the budget cut short (some pairings refused, so ``played_seeds`` alone
+    # would count it as done) is retried as the first seed of the next run; jumping past it
+    # would never retry it. Partial model failures (non-budget errors) stay excluded, as
+    # before. The run's own first seed is never retried from here: it was either just retried
+    # or the start seed. Each run therefore starts at a strictly later seed, so every gap gets
+    # at most one retry and a seed that always fails cannot pin the job to the same window.
+    # Later seeds that get re-played are superseded in ``merge_all``, where later copies win.
+    first = pending["seeds"][0]
     missing = [seed for seed in pending["seeds"] if seed not in seeds]
-    retry = [seed for seed in missing if seed != pending["seeds"][0]]
+    truncated = sorted(budget_refused_seeds(report) & set(pending["seeds"]))
+    retry = sorted((set(missing) | set(truncated)) - {first})
     if retry:
       state["next_seed"] = retry[0]
     else:
@@ -180,7 +210,10 @@ def collect(state: dict[str, Any], dry_run: bool) -> None:
       state["next_seed"] = max(seed for seed in seeds if seed in pending["seeds"]) + 1
     state["consecutive_failures"] = 0
     log(f"{pending['label']}: {matches} matches, seeds played {sorted(seeds)}, "
-        f"missing {missing}; next seed {state['next_seed']}")
+        f"missing {missing}, budget-truncated {truncated}; next seed {state['next_seed']}")
+    if first in truncated:
+      log(f"WARNING: {pending['label']}: the budget cut short the run's first seed {first}; "
+          f"its unplayed pairings are skipped, not retried")
     merge_all()
   else:
     state["consecutive_failures"] += 1

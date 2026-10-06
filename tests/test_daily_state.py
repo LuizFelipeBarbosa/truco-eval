@@ -47,17 +47,50 @@ def _quota(module, monkeypatch, *, used=0.0, allowed=10.0, monthly_used=0.0,
   })
 
 
-def _write_outputs(out, seeds, *, kinds=("orig", "dup"), pairing="a__vs__b", matches=0):
-  for seed in seeds:
-    for kind in kinds:
-      directory = os.path.join(out, "truco_runs", pairing, f"seed{seed}_{kind}")
-      os.makedirs(directory, exist_ok=True)
-      with open(os.path.join(directory, "summary.json"), "w", encoding="utf-8") as f:
-        json.dump({}, f)
+def _write_outputs(out, seeds, *, kinds=("orig", "dup"), pairing="a__vs__b", pairings=None,
+                   matches=0, failures=None, skipped=None):
+  for name in (pairing,) if pairings is None else pairings:
+    for seed in seeds:
+      for kind in kinds:
+        directory = os.path.join(out, "truco_runs", name, f"seed{seed}_{kind}")
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "summary.json"), "w", encoding="utf-8") as f:
+          json.dump({}, f)
   report_dir = os.path.join(out, "truco_runs")
   os.makedirs(report_dir, exist_ok=True)
+  report = {"matches_played": matches}
+  if failures is not None:
+    report["failures"] = failures
+  if skipped is not None:
+    report["skipped"] = skipped
   with open(os.path.join(report_dir, "tournament.json"), "w", encoding="utf-8") as f:
-    json.dump({"matches_played": matches}, f)
+    json.dump(report, f)
+
+
+PAIRINGS = ("a__vs__b", "a__vs__c", "b__vs__c")
+
+
+def _refused(seeds_by_pairing, *, legacy):
+  """Budget-refused entries in the legacy ``failures`` shape or the ``skipped`` shape."""
+  entries = []
+  for pairing, seeds in seeds_by_pairing.items():
+    for seed in seeds:
+      for kind in ("orig", "dup"):
+        entry = {"pairing": pairing, "match_id": f"seed{seed}_{kind}"}
+        if legacy:
+          entry["error"] = "BudgetExhausted: budget: $8.07 spent would exceed $9.60"
+        else:
+          entry["reason"] = "budget: $8.07 spent would exceed $9.60"
+        entries.append(entry)
+  return entries
+
+
+def _write_truncated_run(out, *, complete, partial, refused, legacy):
+  """Seeds ``complete`` in every pairing, ``partial`` only in the first, then refusals."""
+  entries = _refused(refused, legacy=legacy)
+  report = {"failures": entries} if legacy else {"failures": [], "skipped": entries}
+  _write_outputs(out, complete, pairings=PAIRINGS, **report)
+  _write_outputs(out, partial, pairing=PAIRINGS[0], **report)
 
 
 def _fake_kaggle(module, calls, monkeypatch, *, output_writer=None, push_error=None):
@@ -330,6 +363,68 @@ def test_collect_advances_past_last_seed_when_all_played(tmp_path, monkeypatch):
   assert state["next_seed"] == 18
   assert state["consecutive_failures"] == 0
   assert merged == [True]
+
+
+def _collect_truncated(module, monkeypatch, tmp_path, writer):
+  _patch_paths(module, monkeypatch, tmp_path)
+  state = _state(pending=_pending(seeds=list(range(21, 28))), next_seed=21)
+  calls = []
+  _fake_kaggle(module, calls, monkeypatch, output_writer=writer)
+  monkeypatch.setattr(module, "task_status", lambda: (4, "Completed"))
+  merged = []
+  monkeypatch.setattr(module, "merge_all", lambda: merged.append(True))
+  module.collect(state, dry_run=False)
+  assert state["consecutive_failures"] == 0
+  assert merged == [True]
+  return state
+
+
+def test_collect_retries_seed_cut_short_by_budget_in_legacy_failures(tmp_path, monkeypatch):
+  module = _load_daily()
+  refused = {PAIRINGS[0]: [26, 27], PAIRINGS[1]: [25, 26, 27], PAIRINGS[2]: [25, 26, 27]}
+  state = _collect_truncated(module, monkeypatch, tmp_path, lambda path: _write_truncated_run(
+      path, complete=range(21, 25), partial=[25], refused=refused, legacy=True))
+
+  assert state["history"][0]["seeds_played"] == [21, 22, 23, 24, 25]
+  assert state["next_seed"] == 25
+
+
+def test_collect_retries_seed_cut_short_by_budget_in_skipped(tmp_path, monkeypatch):
+  module = _load_daily()
+  refused = {PAIRINGS[0]: [26, 27], PAIRINGS[1]: [25, 26, 27], PAIRINGS[2]: [25, 26, 27]}
+  state = _collect_truncated(module, monkeypatch, tmp_path, lambda path: _write_truncated_run(
+      path, complete=range(21, 25), partial=[25], refused=refused, legacy=False))
+
+  assert state["next_seed"] == 25
+
+
+def test_collect_warns_and_moves_past_budget_cut_at_runs_first_seed(tmp_path, monkeypatch,
+                                                                   capsys):
+  module = _load_daily()
+  later = list(range(22, 28))
+  refused = {PAIRINGS[0]: later, PAIRINGS[1]: [21, *later], PAIRINGS[2]: [21, *later]}
+  state = _collect_truncated(module, monkeypatch, tmp_path, lambda path: _write_truncated_run(
+      path, complete=[], partial=[21], refused=refused, legacy=False))
+
+  assert state["next_seed"] == 22
+  assert "WARNING: v4: the budget cut short the run's first seed 21" in capsys.readouterr().out
+
+
+def test_collect_does_not_retry_seed_with_non_budget_failure(tmp_path, monkeypatch):
+  module = _load_daily()
+  # Partial model failures stay excluded, as before: only budget refusals and seeds without a
+  # complete pair in any pairing are retried.
+  failures = [{"pairing": PAIRINGS[2], "match_id": f"seed23_{kind}", "error": "RuntimeError: boom"}
+              for kind in ("orig", "dup")]
+
+  def writer(path):
+    _write_outputs(path, [seed for seed in range(21, 28) if seed != 23], pairings=PAIRINGS,
+                   failures=failures, skipped=[])
+    _write_outputs(path, [23], pairings=PAIRINGS[:2], failures=failures, skipped=[])
+
+  state = _collect_truncated(module, monkeypatch, tmp_path, writer)
+
+  assert state["next_seed"] == 28
 
 
 def test_collect_failures_pause_after_two_orphan_runs(tmp_path, monkeypatch):
