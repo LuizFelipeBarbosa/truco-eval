@@ -22,7 +22,7 @@ three layers, and dependencies only point downward:
 - `parsers`, `sampler`, `agents`: how a reply becomes an action, including re-prompts and the random fallback.
 - `heuristic`: the deterministic baseline bot.
 - `config`: `ModelConfig` and `MatchSpec`.
-- `match_runner`, `match_log`: the match loop, per-match stats and output files.
+- `match_runner`, `match_log`, `usage`: the match loop, per-match stats and output files; `usage` reads cost and provider without importing a model layer.
 - `stats`, `ratings`, `tournament`: aggregates, Bradley–Terry ratings and round-robins.
 - `replay`: re-drives a logged match.
 - `kbench_task`: Kaggle preflight and budget.
@@ -194,11 +194,9 @@ way to tell versions apart, so keep these changes in commits of their own.
 - The body explains why, and lists any behavior or benchmark change.
 - Leave unrelated working-tree changes alone.
 
-## Known issues (as of 2026-10-04)
+## Known issues (as of 2026-10-05)
 
 Fix these on purpose, not as a side effect of other work:
 
-- The live parser never matches suit words ("K of diamonds"): the harness strips spaces before `soft_match` runs. Parser tests call `soft_match` directly, so they miss this. Test through `TrucoSampler`.
 - Isolation is checked after the model replies, not before the prompt is sent (the README says "before").
-- `runner/match_runner.py` imports `openrouter_model` eagerly, which pulls in `requests`.
-- `kaggle_task/daily.py` (unattended, and it deletes directories) and `kaggle_task/truco_pilot.py` (stale) have no tests.
+- `kaggle_task/truco_pilot.py` is stale and has no tests.

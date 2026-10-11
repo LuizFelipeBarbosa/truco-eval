@@ -7,11 +7,70 @@ import os
 import threading
 import time
 
+import pytest
+
 from runner import cli
 from runner import tournament
-from runner.config import ModelConfig
+from runner.config import KIND_RANDOM, ModelConfig
 
 BOTS = [ModelConfig(kind="random", label=f"bot{i}") for i in range(3)]
+
+
+def test_resume_rejects_changed_team_settings_before_playing(tmp_path):
+  from runner.match_runner import play_match
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+  tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                            progress=lambda m: None, play_fn=play_match)
+  summary_path = tmp_path / "a__vs__b" / "seed0_orig" / "summary.json"
+  old_summary = summary_path.read_bytes()
+  calls = []
+  changed = [models[0], ModelConfig(kind=KIND_RANDOM, label="b", max_reprompts=2)]
+  with pytest.raises(ValueError) as caught:
+    tournament.run_tournament(changed, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                              progress=lambda m: None, play_fn=lambda spec: calls.append(spec))
+  message = str(caught.value)
+  assert str(summary_path.parent) in message
+  assert "max_reprompts" in message and "new output directory" in message
+  assert "--no-resume" in message
+  assert calls == [] and summary_path.read_bytes() == old_summary
+
+
+def test_resume_rejects_changed_player_count_before_playing(tmp_path):
+  from runner.match_runner import play_match
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+  tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                            num_players=4, progress=lambda m: None, play_fn=play_match)
+  summary_path = tmp_path / "a__vs__b" / "seed0_orig" / "summary.json"
+  old_summary = summary_path.read_bytes()
+  calls = []
+  with pytest.raises(ValueError) as caught:
+    tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                              num_players=6, progress=lambda m: None,
+                              play_fn=lambda spec: calls.append(spec))
+  message = str(caught.value)
+  assert str(summary_path.parent) in message
+  assert "match num_players: old=4, new=6" in message
+  assert "team A" not in message and "team B" not in message
+  assert calls == [] and summary_path.read_bytes() == old_summary
+
+
+def test_resume_reports_missing_match_field(tmp_path):
+  from runner.match_runner import play_match
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+  tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                            progress=lambda m: None, play_fn=play_match)
+  summary_path = tmp_path / "a__vs__b" / "seed0_orig" / "summary.json"
+  summary = json.loads(summary_path.read_text())
+  del summary["num_players"]
+  summary_path.write_text(json.dumps(summary))
+  calls = []
+  with pytest.raises(ValueError, match="match num_players: old=<missing>, new=4"):
+    tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                              progress=lambda m: None, play_fn=lambda spec: calls.append(spec))
+  assert calls == []
 
 
 def test_pairings_and_dirs(tmp_path):
@@ -53,6 +112,48 @@ def test_run_tournament_report_and_resume(tmp_path):
   tournament.run_tournament(BOTS, seeds=[0, 1, 2], out_root=str(tmp_path), duplicate=True,
                             progress=lambda m: None, play_fn=counting)
   assert sorted(set(calls)) == ["seed2_dup", "seed2_orig"] and len(calls) == 6
+
+
+def test_resume_accepts_missing_default_config_field(tmp_path):
+  from runner.match_runner import play_match
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+  tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                            progress=lambda m: None, play_fn=play_match)
+  summary_path = tmp_path / "a__vs__b" / "seed0_orig" / "summary.json"
+  summary = json.loads(summary_path.read_text())
+  del summary["team_config"]["A"]["max_reprompts"]
+  summary_path.write_text(json.dumps(summary))
+  calls = []
+  report = tournament.run_tournament(
+      models, seeds=[0], duplicate=False, out_root=str(tmp_path), progress=lambda m: None,
+      play_fn=lambda spec: calls.append(spec))
+  assert calls == [] and report["matches_played"] == 1
+
+
+def test_budget_skip_is_reported_without_traceback(tmp_path, capsys):
+  from runner.kbench_task import BudgetExhausted
+
+  models = [ModelConfig(kind=KIND_RANDOM, label="a"), ModelConfig(kind=KIND_RANDOM, label="b")]
+
+  def skip(spec):
+    raise BudgetExhausted("budget cap")
+
+  report = tournament.run_tournament(models, seeds=[0], duplicate=False, out_root=str(tmp_path),
+                                     progress=lambda m: None, play_fn=skip)
+  assert report["skipped"] == [{
+      "pairing": "a__vs__b", "match_id": "seed0_orig", "reason": "budget cap"}]
+  assert report["failures"] == []
+  assert "Traceback" not in capsys.readouterr().err
+  assert "1 match(es) skipped (not started) and are excluded." in tournament.format_report(report)
+
+  def fail(spec):
+    raise RuntimeError("boom")
+
+  failed = tournament.run_tournament(models, seeds=[1], duplicate=False, out_root=str(tmp_path),
+                                     progress=lambda m: None, play_fn=fail)
+  assert failed["failures"] == [{
+      "pairing": "a__vs__b", "match_id": "seed1_orig", "error": "RuntimeError: boom"}]
 
 
 def test_run_tournament_interleaves_each_pair_before_next_pair(tmp_path):

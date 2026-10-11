@@ -6,9 +6,9 @@ import collections
 import dataclasses
 from typing import Any, Mapping
 
-import openrouter_model
 from runner import agents as truco_agents
 from runner import prompts as truco_prompts
+from runner import usage as truco_usage
 from runner import version as truco_version
 from runner.config import MatchSpec, ModelConfig
 from runner.match_log import MatchLogger
@@ -64,13 +64,13 @@ def _tally(stats: dict[str, Any], action: str, legal: list[str], decision: truco
     stats["completion_tokens"] += gr.generation_tokens or 0
     stats["reasoning_tokens"] += gr.reasoning_tokens or 0
     stats["generation_secs"] += gr.duration_success_only_secs or 0.0
-    cost = openrouter_model.served_cost(gr)
+    cost = truco_usage.served_cost(gr)
     if cost is None:
       stats["cost_known"] = False
     else:
       stats["cost_responses"] += 1
       stats["cost_usd"] += cost
-    provider = openrouter_model.served_provider(gr)
+    provider = truco_usage.served_provider(gr)
     if provider:
       stats["providers"][provider] += 1
 
@@ -185,13 +185,13 @@ def play_match(
               "main_response_and_thoughts": gr.main_response_and_thoughts,
               "extracted_action": prompt["extracted_action"],
               "matched_action": prompt["matched_action"],
-              "served_provider": openrouter_model.served_provider(gr),
+              "served_provider": truco_usage.served_provider(gr),
               "request_model": (gr.request_for_logging or {}).get("model"),
               "request_provider": (gr.request_for_logging or {}).get("provider"),
               "usage": {
                   "prompt_tokens": gr.prompt_tokens, "completion_tokens": gr.generation_tokens,
                   "reasoning_tokens": gr.reasoning_tokens, "total_tokens": gr.total_tokens,
-                  "cost_usd": openrouter_model.served_cost(gr),
+                  "cost_usd": truco_usage.served_cost(gr),
               },
               "duration_secs": gr.duration_success_only_secs,
           })
@@ -259,8 +259,10 @@ def play_match(
         logger.event(error_event)
       except Exception:  # pylint: disable=broad-exception-caught
         pass  # e.g. the failure came from ``logger.close`` after the transcript was closed
-      logger.close_transcript()
     raise
+  finally:
+    if logger is not None:
+      logger.close_transcript()
 
 
 def make_spec(seed: int, team_a: ModelConfig, team_b: ModelConfig, *, num_players: int = 4,

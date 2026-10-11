@@ -10,8 +10,8 @@ matches inside a Kaggle Benchmarks task exactly as it does through
   prompt of the match.
 * The proxy reports usage and cost (nanodollars); they are exposed in
   ``response_for_logging`` in the same shape OpenRouter returns
-  (``usage.cost`` in USD, ``provider``), so ``openrouter_model.served_cost``
-  and ``served_provider`` keep working in the match stats.
+  (``usage.cost`` in USD, ``provider``), so ``runner.usage.served_cost`` and
+  ``served_provider`` read them in the match stats.
 * ``model_options["reasoning"] = {"effort": "low"|"medium"|"high"}`` maps to
   the SDK's ``reasoning`` level. Unset means the model's default, which is
   what the OpenRouter runs used.

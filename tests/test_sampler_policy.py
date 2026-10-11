@@ -84,6 +84,57 @@ def test_soft_match_accepts_ascii_suit_in_final_answer():
   assert out.action == legal[0] and out.auxiliary_outputs["illegal"] == []
 
 
+def test_sampler_accepts_compressed_suit_word_card():
+  m, seat, obs, _, readable = _ctx()
+  legal = ["PLAY K♦", "PLAY 3♣", "TRUCO", "FOLD"]
+  model = FakeModel(responses=["Final Answer: K of diamonds"])
+  out = _sample(model, m, seat, obs, legal, readable)
+  assert out.action == "PLAY K♦"
+  assert out.auxiliary_outputs["attempts"][0]["attempt"] == 0
+  assert out.auxiliary_outputs["illegal"] == []
+  assert out.auxiliary_outputs["fallback"] is False
+  assert len(model.calls) == 1
+
+
+def test_sampler_accepts_markdown_play_with_compressed_suit_word_card():
+  m, seat, obs, _, readable = _ctx()
+  legal = ["PLAY K♦", "PLAY 3♣", "TRUCO", "FOLD"]
+  model = FakeModel(responses=["Final Answer: **play the 3 of clubs**"])
+  out = _sample(model, m, seat, obs, legal, readable)
+  assert out.action == "PLAY 3♣"
+  assert out.auxiliary_outputs["illegal"] == []
+
+
+def test_sampler_accepts_portuguese_suit_word_card():
+  m, seat, obs, _, readable = _ctx()
+  legal = ["PLAY Q♠", "PLAY 3♣", "TRUCO", "FOLD"]
+  model = FakeModel(responses=["Final Answer: Q de espadas"])
+  out = _sample(model, m, seat, obs, legal, readable)
+  assert out.action == "PLAY Q♠"
+  assert out.auxiliary_outputs["illegal"] == []
+
+
+def test_sampler_reprompts_for_illegal_suit_word_card():
+  m, seat, obs, _, readable = _ctx()
+  legal = ["PLAY K♦", "PLAY 3♣", "TRUCO", "FOLD"]
+  model = FakeModel(responses=["Final Answer: K of hearts", "Final Answer: PLAY K♦"])
+  out = _sample(model, m, seat, obs, legal, readable)
+  assert out.action == "PLAY K♦"
+  assert out.auxiliary_outputs["attempts"][0]["matched_action"] is None
+  assert out.auxiliary_outputs["illegal"][0]["attempt"] == 0
+  assert out.auxiliary_outputs["illegal"][0]["extracted_action"] == "Kofhearts"
+  assert len(model.calls) == 2
+
+
+def test_sampler_maps_mao_forfeit_without_corrupting_of_text():
+  m, seat, obs, _, readable = _ctx()
+  legal = ["MAO_PLAY", "MAO_FORFEIT"]
+  model = FakeModel(responses=["Final Answer: MAO_FORFEIT"])
+  out = _sample(model, m, seat, obs, legal, readable)
+  assert out.action == "MAO_FORFEIT"
+  assert out.auxiliary_outputs["illegal"] == []
+
+
 def test_prompt_templates_cover_every_decision_type():
   from runner import prompts
   # Raise response

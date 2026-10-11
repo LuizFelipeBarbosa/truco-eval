@@ -6,10 +6,21 @@ fixed hour. Each invocation:
 
 1. If a pushed run has finished, downloads its outputs into
    ``runs/kaggle_cheap_rr_v<N>/`` (Kaggle keeps only the latest version's
-   output, so this must happen before the next push), advances the next seed
-   and rebuilds the merged leaderboard.
+   output, so this must happen before the next push), updates the retry queue
+   and the next fresh seed, and rebuilds the merged leaderboard.
 2. If no run is pending and the daily quota has refilled, renders
-   ``truco_cheap_rr.py`` with the next seeds and pushes it (a push runs it).
+   ``truco_cheap_rr.py`` with the queued seeds (lowest first) followed by
+   fresh seeds from ``next_seed``, ``SEEDS_PER_RUN`` in total, and pushes it
+   (a push runs it).
+
+Seeds a run did not finish go to ``retry_queue`` (``{"seed", "attempts"}``,
+sorted by seed). A seed is complete when some pairing has its orig+dup pair
+and the budget cap refused none of its matches; partial model failures stay
+excluded and are not retried. A seed whose matches never started (the cap
+refused them all) is requeued free. Any other incomplete seed is charged an
+attempt and dropped with a WARNING after ``MAX_SEED_ATTEMPTS``, so a seed that
+always fails cannot spend every day's quota. ``next_seed`` is the next fresh
+seed. A state without ``retry_queue`` is migrated once from its history.
 
 State lives in ``runs/kaggle_daily/state.json``. After two consecutive failed
 runs the job pauses itself (``"paused": true``); fix the cause, set it back to
@@ -47,6 +58,7 @@ RUNS = os.path.join(REPO, "runs")
 SEEDS_PER_RUN = 7  # more than a day's quota buys (~5.5 seeds); the task's budget cuts it off
 REFILLED_BELOW_USD = 0.5
 MAX_CONSECUTIVE_FAILURES = 2
+MAX_SEED_ATTEMPTS = 2
 KAGGLE = os.path.join(os.path.dirname(sys.executable), "kaggle")
 
 
@@ -121,14 +133,92 @@ def run_dir(label: str) -> str:
 def played_seeds(directory: str) -> set[int]:
   """Seeds with a complete ``orig``+``dup`` pair in at least one pairing directory.
 
-  An orphan half is not seat-fair, so it neither advances ``next_seed`` past its seed nor makes
-  a run count as ok.
+  An orphan half is not seat-fair, so it neither completes its seed nor makes a run count as ok.
   """
   halves: dict[tuple[str, int], set[str]] = {}
   for f in glob.glob(os.path.join(directory, "truco_runs", "*", "*", "summary.json")):
     if m := re.search(r"/([^/]+)/seed(\d+)_(orig|dup)/summary\.json$", f):
       halves.setdefault((m.group(1), int(m.group(2))), set()).add(m.group(3))
   return {seed for (_, seed), kinds in halves.items() if kinds == {"orig", "dup"}}
+
+
+def load_report(directory: str) -> dict[str, Any] | None:
+  """The run's ``truco_runs/tournament.json``, or ``None`` if it was not written."""
+  path = os.path.join(directory, "truco_runs", "tournament.json")
+  if not os.path.exists(path):
+    return None
+  with open(path, encoding="utf-8") as f:
+    return json.load(f)
+
+
+def classify_seeds(directory: str, report: dict[str, Any] | None,
+                   seeds: list[int]) -> dict[int, str]:
+  """Classify each seed of a run as ``complete``, ``untouched`` or ``attempted``.
+
+  * ``complete``: some pairing has its orig+dup pair and the budget cap refused none of the
+    seed's matches. Non-cap failures in other pairings stay excluded and are not retried.
+  * ``untouched``: no match of the seed started and it has no non-cap failure. A match
+    directory is the evidence of a start: ``MatchLogger`` creates it when the match begins,
+    and refused matches never create one. This holds with or without a report, so a kernel
+    crash or timeout does not charge the seeds it never reached. It is not limited to a run's
+    tail: parallel admission can refuse an earlier unit and admit a later one.
+  * ``attempted``: anything else, e.g. cut short by the cap after some matches started, or
+    matches started without a complete pair (including before a crash).
+
+  Refusals are reported under ``skipped``; the Kaggle task runs the dataset wheels, which may
+  predate that key and report them as ``failures`` prefixed ``BudgetExhausted: ``.
+  """
+  from runner import kbench_task  # pylint: disable=import-outside-toplevel
+
+  played = played_seeds(directory)
+  cap_refused: set[int] = set()
+  other_failed: set[int] = set()
+  if report is not None:
+    entries = [(entry, entry.get("reason", "")) for entry in report.get("skipped") or []]
+    entries += [(entry, entry.get("error", "")) for entry in report.get("failures") or []]
+    for entry, message in entries:
+      if m := re.fullmatch(r"seed(\d+)_(?:orig|dup)", str(entry.get("match_id", ""))):
+        target = cap_refused if kbench_task.is_cap_refusal(str(message)) else other_failed
+        target.add(int(m.group(1)))
+  started = set()
+  for match_dir in glob.glob(os.path.join(directory, "truco_runs", "*", "seed*_*")):
+    m = re.fullmatch(r"seed(\d+)_(?:orig|dup)", os.path.basename(match_dir))
+    if m and os.path.isdir(match_dir):
+      started.add(int(m.group(1)))
+  kinds = {}
+  for seed in seeds:
+    if seed in played and seed not in cap_refused:
+      kinds[seed] = "complete"
+    elif seed not in started and seed not in other_failed:
+      kinds[seed] = "untouched"
+    else:
+      kinds[seed] = "attempted"
+  return kinds
+
+
+def migrate_retry_queue(state: dict[str, Any], runs_root: str) -> list[int]:
+  """Create ``state["retry_queue"]`` from the history of a state that predates it.
+
+  Queues, with one attempt charged, each incomplete seed of a collected run that is below
+  ``next_seed``, not requested by a later run and not pending: the old checkpoint skipped them.
+  Sets the key even when nothing is queued, so it runs once.
+  """
+  history = state.get("history") or []
+  pending_seeds = set((state.get("pending") or {}).get("seeds") or [])
+  queued: set[int] = set()
+  for i, entry in enumerate(history):
+    directory = os.path.join(runs_root, f"kaggle_cheap_rr_{entry['label']}")
+    if not os.path.isdir(directory):
+      log(f"WARNING: migration: no run directory {directory} for {entry['label']}; skipped")
+      continue
+    later = {seed for newer in history[i + 1:] for seed in newer["seeds"]}
+    candidates = [seed for seed in entry["seeds"] if seed < state["next_seed"]
+                  and seed not in later and seed not in pending_seeds]
+    kinds = classify_seeds(directory, load_report(directory), candidates)
+    queued.update(seed for seed in candidates if kinds[seed] != "complete")
+  state["retry_queue"] = [{"seed": seed, "attempts": 1} for seed in sorted(queued)]
+  log(f"migration: retry queue {sorted(queued)} (1 attempt each)")
+  return sorted(queued)
 
 
 def collect(state: dict[str, Any], dry_run: bool) -> None:
@@ -151,15 +241,40 @@ def collect(state: dict[str, Any], dry_run: bool) -> None:
   kaggle("kernels", "output", KERNEL, "-p", out, timeout=1800)
   seeds = played_seeds(out)
   ok = bool(seeds & set(pending["seeds"]))
-  report_path = os.path.join(out, "truco_runs", "tournament.json")
-  matches = json.load(open(report_path, encoding="utf-8"))["matches_played"] if os.path.exists(report_path) else 0
+  report = load_report(out)
+  matches = report["matches_played"] if report is not None else 0
   state["history"].append({**pending, "status": status, "matches": matches,
                            "seeds_played": sorted(seeds), "collected_at": now_iso()})
   state["pending"] = None
   if ok:
-    state["next_seed"] = max(seeds) + 1
+    # Queued seeds this run retried leave the queue and come back only if still incomplete.
+    # Known remaining cost: retrying a cap-truncated seed replays all of its pairings, including
+    # the complete ones; ``merge_all`` supersedes the earlier copies (later copies win).
+    queue = {item["seed"]: item["attempts"] for item in state["retry_queue"]}
+    retried = {seed: queue.pop(seed) for seed in pending["seeds"] if seed in queue}
+    fresh = [seed for seed in pending["seeds"] if seed not in retried]
+    kinds = classify_seeds(out, report, pending["seeds"])
+    complete, requeued, dropped = [], [], []
+    for seed in pending["seeds"]:
+      if kinds[seed] == "complete":
+        complete.append(seed)
+        continue
+      attempts = retried.get(seed, 0) + (kinds[seed] == "attempted")
+      if attempts < MAX_SEED_ATTEMPTS:
+        queue[seed] = attempts
+        requeued.append({"seed": seed, "attempts": attempts})
+      else:
+        dropped.append(seed)
+        log(f"WARNING: {pending['label']}: seed {seed} is still incomplete after {attempts} "
+            f"attempts; dropped")
+    state["retry_queue"] = [{"seed": seed, "attempts": attempts}
+                            for seed, attempts in sorted(queue.items())]
+    if fresh:
+      state["next_seed"] = max(state["next_seed"], max(fresh) + 1)
     state["consecutive_failures"] = 0
-    log(f"{pending['label']}: {matches} matches, seeds {min(seeds)}-{max(seeds)}; next seed {state['next_seed']}")
+    log(f"{pending['label']}: {matches} matches; complete {complete}, requeued "
+        f"{[(item['seed'], item['attempts']) for item in requeued]}, dropped {dropped}; "
+        f"next seed {state['next_seed']}")
     merge_all()
   else:
     state["consecutive_failures"] += 1
@@ -181,8 +296,13 @@ def launch(state: dict[str, Any], dry_run: bool) -> None:
         f"left; the task's budget cap may exceed it, so not launching")
     return
   label = f"v{state['next_label']}"
-  seeds = list(range(state["next_seed"], state["next_seed"] + SEEDS_PER_RUN))
-  log(f"daily quota refilled (${quota['used']:.2f} used); launching {label} with seeds {seeds}")
+  # The queue and next_seed are left alone here: collect updates them from the run's outputs,
+  # so a failed push loses nothing.
+  retries = [item["seed"] for item in state["retry_queue"]][:SEEDS_PER_RUN]
+  seeds = retries + list(range(state["next_seed"],
+                               state["next_seed"] + SEEDS_PER_RUN - len(retries)))
+  log(f"daily quota refilled (${quota['used']:.2f} used); launching {label} with seeds {seeds} "
+      f"(retrying {retries})")
   if dry_run:
     return
   path = render_task(seeds, label)
@@ -323,6 +443,8 @@ def main() -> int:
       log(f"paused (see {STATE_FILE}); exiting")
       return 0
     try:
+      if "retry_queue" not in state:
+        migrate_retry_queue(state, RUNS)
       if state["pending"]:
         collect(state, args.dry_run)
       if not state["pending"] and not state.get("paused"):

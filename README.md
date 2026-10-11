@@ -108,7 +108,10 @@ the rating anchor once it has at least 20 complete pairs against every opponent.
 `tournament` plays every pairing of a list of models and is resumable: matches
 that already have a `summary.json` are skipped, so a run can be stopped and
 relaunched, extended with more seeds, or have failed matches replayed after a
-fix.
+fix. A resumed run first checks every existing `summary.json` against the
+current match identity (player count, seed, orig/dup) and team settings (slug,
+provider, model and API options, re-prompts, label) and refuses to start if any
+differ; write changed settings to a new `--out` directory instead.
 
 ```bash
 uv run python -m runner.cli tournament --models-file models.json --seeds 100 --duplicate \
@@ -128,7 +131,8 @@ starts after its original finishes). The Kaggle `Budget` admits a pair as a
 unit: it starts an original only if the expected cost of both halves fits,
 always starts the duplicate of an admitted original, refuses the duplicate when
 its original was refused or failed, and charges failed matches at least the
-expected match cost.
+expected match cost. A match the budget refuses is not a failure: it is listed
+under `skipped` in `tournament.json`, with the reason, and not under `failures`.
 
 ## Interpreting the outputs
 
@@ -203,7 +207,10 @@ Prompts are stateless single turns (system instruction = the rules text minus
 §13 plus the answer format; user message = observation + legal list). The
 observation already carries the full public history of the hand, all table
 talk, and the results of previous hands, so nothing is lost by not accumulating
-chat history. A model that answers illegally is re-prompted once with its own
+chat history. The action is read from the last `Final Answer:` line and matched
+to exactly one legal action; a card may be written as `PLAY K♦`, `K♦`, `KD`, or
+in words (`K of diamonds`, `Q de espadas`). A model that answers illegally is
+re-prompted once with its own
 previous reply quoted and the legal list repeated; a second illegal reply is
 replaced by a uniformly random legal action drawn from the engine's
 seed-derived fallback stream.

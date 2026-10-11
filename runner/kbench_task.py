@@ -17,18 +17,40 @@ Two guards that matter on the Model Proxy's free quota:
 from __future__ import annotations
 
 import concurrent.futures
+import re
 import threading
 import time
 from typing import Any, Callable, Sequence
 
 from runner import match_runner
 from runner.config import KIND_KBENCH, MatchSpec, ModelConfig
+from runner.tournament import MatchSkipped
 
 _PROBE = "Reply with exactly: Final Answer: FOLD"
 
 
-class BudgetExhausted(RuntimeError):
+class BudgetExhausted(MatchSkipped):
   pass
+
+
+# The ``Budget.play_fn`` refusals that mean the cap was reached. A duplicate refused because
+# its original *failed* is a model failure, not a cap refusal.
+_CAP_REFUSALS = (
+    re.compile(r"budget: \$\d+(?:\.\d+)? spent \+ .* would exceed \$\d+(?:\.\d+)?"),
+    re.compile(r"budget: original for .+ seed -?\d+ was not started \(budget\); "
+               r"duplicate is not started"),
+)
+
+
+def is_cap_refusal(message: str) -> bool:
+  """Whether a ``BudgetExhausted`` message is a refusal because the budget cap was reached.
+
+  Accepts the ``skipped`` reason or a legacy ``failures`` error (prefixed with
+  ``BudgetExhausted: ``). Covers both cap message shapes: older wheels omit the reserved and
+  needed counts. Anything unrecognised is not a cap refusal.
+  """
+  message = message.removeprefix("BudgetExhausted: ")
+  return any(pattern.fullmatch(message) for pattern in _CAP_REFUSALS)
 
 
 def quick_preflight(models: Sequence[ModelConfig], *, attempts: int = 4,

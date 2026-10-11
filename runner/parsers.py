@@ -19,6 +19,10 @@ _SUIT_WORDS = {
 }
 _SUIT_LETTERS = {"C": "♣", "H": "♥", "S": "♠", "D": "♦"}
 _CARD_RE = re.compile(r"^([4567QJKA23])([♣♥♠♦CHSD])$")
+_SUIT_WORD_PATTERN = "|".join(re.escape(word) for word in _SUIT_WORDS)
+_CARD_WORD_RE = re.compile(
+    rf"^([4567QJKA23])(?:OF|DE)?({_SUIT_WORD_PATTERN})$"
+)
 _STRIP_RE = re.compile(r"[^A-Z0-9♣♥♠♦_]")
 
 
@@ -38,8 +42,8 @@ class TrucoRuleParser(parsers.TextParser):
 
   Isolates that line first (so a trailing ``Talk:`` line is never mistaken
   for the action), then applies the harness ``RuleBasedMoveParser`` to it.
-  The harness parser strips whitespace and markdown; the soft parser
-  normalizes whitespace on both sides, so ``PLAYQ♠`` still matches.
+  The harness parser strips whitespace and markdown before soft matching, so
+  compressed word-form cards such as ``Kofdiamonds`` are canonicalized too.
   """
 
   def __init__(self):
@@ -70,7 +74,11 @@ def normalize(text: str) -> str:
 def _canonical_card(token: str) -> str | None:
   m = _CARD_RE.match(token)
   if not m:
-    return None
+    word_match = _CARD_WORD_RE.match(token)
+    if word_match is None:
+      return None
+    rank, suit_word = word_match.groups()
+    return rank + _SUIT_WORDS[suit_word]
   rank, suit = m.group(1), m.group(2)
   suit = _SUIT_LETTERS.get(suit, suit)
   return rank + suit
@@ -98,6 +106,7 @@ def soft_match(
   # Card plays: "PLAY QS", "QS", "Q of spades", "play the Q♠".
   body = norm[4:] if norm.startswith("PLAY") else norm
   body = re.sub(r"^(THE|CARD|MY)+", "", body)
+  # RuleBasedMoveParser strips whitespace before soft_match, yielding e.g. KOFDIAMONDS.
   card = _canonical_card(body)
   plays = [a for a in legal_actions if a.startswith("PLAY ")]
   if card is not None:

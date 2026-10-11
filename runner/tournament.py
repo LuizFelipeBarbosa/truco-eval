@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import dataclasses
 import itertools
 import json
 import os
@@ -15,6 +16,68 @@ from runner import stats as truco_stats
 from runner import version as truco_version
 from runner.config import KIND_HEURISTIC, KIND_RANDOM, MatchSpec, ModelConfig
 from runner.match_runner import play_match
+
+
+_MISSING = object()
+
+
+class MatchSkipped(RuntimeError):
+  """Raised by a play_fn to decline a match without it being a failure."""
+
+
+def _config_mismatches(prior: dict[str, Any],
+                       expected: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
+  """Return expected model-config keys whose prior values do not match."""
+  fields = {field.name: field for field in dataclasses.fields(ModelConfig)}
+  mismatches: dict[str, tuple[Any, Any]] = {}
+  for key, new_value in expected.items():
+    if key in prior:
+      old_value = prior[key]
+    elif key == "display":
+      old_value = _MISSING
+    else:
+      field = fields[key]
+      if field.default is not dataclasses.MISSING:
+        old_value = field.default
+      elif field.default_factory is not dataclasses.MISSING:
+        old_value = field.default_factory()
+      else:
+        old_value = _MISSING
+    if old_value is _MISSING or old_value != new_value:
+      mismatches[key] = (old_value, new_value)
+  return mismatches
+
+
+def _prior_mismatches(spec: MatchSpec,
+                      prior: dict[str, Any]) -> dict[str, dict[str, tuple[Any, Any]]]:
+  """Compare a prior summary's match identity and team configs with the current match spec.
+
+  The out_dir does not encode the player count, so the match-level fields are checked too.
+  Every summary has recorded them since the first commit, so an absent one is a mismatch.
+  ``code_version`` is deliberately not compared: resume exists to replay failed matches after
+  a code fix.
+  """
+  mismatches: dict[str, dict[str, tuple[Any, Any]]] = {}
+  expected_match = {"num_players": spec.num_players, "seed": spec.seed, "swap": spec.swap,
+                    "match_id": spec.match_id}
+  match_differences = {
+      key: (prior.get(key, _MISSING), new_value) for key, new_value in expected_match.items()
+      if prior.get(key, _MISSING) != new_value}
+  if match_differences:
+    mismatches["match"] = match_differences
+  prior_teams = prior.get("team_config", {})
+  for team in ("A", "B"):
+    expected = spec.config_for_team(team).to_dict()
+    old = prior_teams.get(team, {}) if isinstance(prior_teams, dict) else {}
+    differences = _config_mismatches(old if isinstance(old, dict) else {}, expected)
+    if differences:
+      mismatches[f"team {team}"] = differences
+  return mismatches
+
+
+def _format_old(value: Any) -> str:
+  """Format a prior config value for a resume mismatch message."""
+  return "<missing>" if value is _MISSING else repr(value)
 
 
 def _slug(label: str) -> str:
@@ -95,22 +158,42 @@ def run_tournament(
                            num_players=num_players, exclude=exclude)
   summaries: list[dict[str, Any]] = []
   todo: list[MatchSpec] = []
+  resume_mismatches: list[str] = []
   for spec in specs:
     prior = _load_summary(spec) if resume else None
     if prior is not None:
-      summaries.append(prior)
+      mismatches = _prior_mismatches(spec, prior)
+      if mismatches:
+        details = []
+        for scope, differences in mismatches.items():
+          details.extend(
+              f"{scope} {key}: old={_format_old(old)}, new={_format_old(new)}"
+              for key, (old, new) in differences.items())
+        resume_mismatches.append(f"{spec.out_dir}: " + "; ".join(details))
+      else:
+        summaries.append(prior)
     else:
       todo.append(spec)
+  if resume_mismatches:
+    raise ValueError(
+        "Existing match summaries do not match the current match or team settings:\n"
+        + "\n".join(f"  {mismatch}" for mismatch in resume_mismatches)
+        + "\nUse a new output directory (or --no-resume) to run with different settings.")
   progress(f"Tournament: {len(models)} models, {len(pairings(models))} pairings, "
            f"{len(specs)} matches total, {len(summaries)} already done, {len(todo)} to play "
            f"(parallel={parallel}) -> {out_root}")
   failures: list[dict[str, str]] = []
+  skipped: list[dict[str, str]] = []
   done = [len(summaries)]
 
   def _play(spec: MatchSpec):
     pairing = os.path.basename(os.path.dirname(spec.out_dir))
     try:
       s = play_fn(spec)
+    except MatchSkipped as e:
+      skipped.append({"pairing": pairing, "match_id": spec.match_id, "reason": str(e)})
+      progress(f"  [{pairing}] {spec.match_id}: SKIPPED ({str(e)[:160]})")
+      return None
     except Exception as e:  # pylint: disable=broad-exception-caught
       traceback.print_exc()
       failures.append({"pairing": pairing, "match_id": spec.match_id,
@@ -139,7 +222,7 @@ def run_tournament(
   else:
     results = [r for unit in units for r in _play_unit(unit)]
   summaries.extend(r for r in results if r is not None)
-  report = build_report(models, summaries, failures)
+  report = build_report(models, summaries, failures, skipped)
   report["code_version"] = truco_version.code_version()
   with open(os.path.join(out_root, "tournament.json"), "w", encoding="utf-8") as f:
     json.dump(report, f, indent=2, sort_keys=True, ensure_ascii=False)
@@ -147,7 +230,8 @@ def run_tournament(
 
 
 def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
-                 failures: list[dict[str, str]] | None = None) -> dict[str, Any]:
+                 failures: list[dict[str, str]] | None = None,
+                 skipped: list[dict[str, str]] | None = None) -> dict[str, Any]:
   labels = [m.display for m in models]
   extra = {s["team_config"][t]["display"] for s in summaries for t in ("A", "B")} - set(labels)
   labels.extend(sorted(extra))
@@ -196,6 +280,7 @@ def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
       "pairings": pairing_stats,
       "overall": overall,
       "failures": failures or [],
+      "skipped": skipped or [],
   }
 
 
@@ -263,4 +348,6 @@ def format_report(report: dict[str, Any]) -> str:
     lines.append(f"  {a:<{w}}  " + "  ".join(cells))
   if report["failures"]:
     lines.append(f"\n{len(report['failures'])} match(es) failed and are excluded.")
+  if report.get("skipped"):
+    lines.append(f"\n{len(report['skipped'])} match(es) skipped (not started) and are excluded.")
   return "\n".join(lines)

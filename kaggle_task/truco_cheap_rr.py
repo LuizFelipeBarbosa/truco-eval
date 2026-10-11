@@ -83,7 +83,17 @@ def truco_cheap_round_robin(llm) -> dict:  # pylint: disable=unused-argument
                                      parallel=PARALLEL, play_fn=budget.play_fn)
   print(tournament.format_report(report))
   print(f"Spent ${budget.spent_usd:.2f} of ${BUDGET_USD:.2f}")
-  failures = [f for f in report["failures"] if not f["error"].startswith("BudgetExhausted")]
+  skipped = report.get("skipped")
+  if skipped is None:
+    # This compatibility fallback can be removed once the lfpmb1/truco-eval-wheels dataset is
+    # rebuilt from this commit.
+    skipped_for_budget = [f for f in report["failures"]
+                          if f["error"].startswith("BudgetExhausted")]
+    failures = [f for f in report["failures"]
+                if not f["error"].startswith("BudgetExhausted")]
+  else:
+    skipped_for_budget = skipped
+    failures = report["failures"]
   kbench.assertions.assert_empty(failures, expectation="Every match the budget allowed completes")
   return {
       "dropped": dropped,
@@ -92,7 +102,7 @@ def truco_cheap_round_robin(llm) -> dict:  # pylint: disable=unused-argument
       "standings": report["standings"],
       "head_to_head": report["head_to_head"],
       "ratings": report["ratings"],
-      "skipped_for_budget": len(report["failures"]) - len(failures),
+      "skipped_for_budget": len(skipped_for_budget),
       "failures": failures,
   }
 

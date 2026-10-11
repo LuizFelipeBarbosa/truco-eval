@@ -48,6 +48,7 @@ class MatchLogger:
     """Close the transcript stream; safe to call more than once."""
     if self._transcript:
       self._transcript.close()
+      self._transcript = None
 
   def _replay_engine_event(self, e: dict[str, Any]) -> None:
     t = e["type"]
