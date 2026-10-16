@@ -1,5 +1,7 @@
 """Ladder mechanics (§7): calls, responses, raise-backs, raise right."""
 
+from __future__ import annotations
+
 import pytest
 
 from tests.conftest import act, deal

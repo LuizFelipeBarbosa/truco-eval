@@ -1,5 +1,7 @@
 """Rule-based extraction, talk extraction, and soft matching."""
 
+from __future__ import annotations
+
 from game_arena.harness import parsers
 import pytest
 

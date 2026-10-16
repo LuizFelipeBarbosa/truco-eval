@@ -1,5 +1,7 @@
 """Kaggle Benchmarks helpers: slug resolution and the tournament budget guard."""
 
+from __future__ import annotations
+
 from pathlib import Path
 import random
 import runpy

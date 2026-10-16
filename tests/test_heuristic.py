@@ -1,5 +1,7 @@
 """Heuristic baseline bot: exact rule positions, determinism, legality, strength."""
 
+from __future__ import annotations
+
 import json
 import random
 

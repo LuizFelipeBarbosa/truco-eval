@@ -1,5 +1,7 @@
 """Trick resolution (§5), hand resolution (§6), early termination."""
 
+from __future__ import annotations
+
 import pytest
 
 from tests.conftest import act, deal
