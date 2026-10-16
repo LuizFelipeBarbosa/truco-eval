@@ -7,7 +7,8 @@ first to 12), built from three fixed pieces:
 |---|---|---|
 | Game engine | `truco/` | Standalone deterministic Python engine with an OpenSpiel-flavored interface. No LLM or harness imports. |
 | Model layer | `openrouter_model.py`, `kbench_model.py`, `model_common.py` | `OpenRouterModel` (and `KbenchModel` for the Kaggle Model Proxy), `game_arena.harness.model_generation.MultimodalModel`s following the harness's `TogetherAIModel` pattern; `model_common` holds their shared token default, retry codes and cost/provider readers. |
-| Orchestrator | `runner/` | Per-seat prompts with strict information isolation, a custom sampler implementing the illegal-action policy, JSONL logging, aggregate stats, CLI. |
+| Orchestrator | `runner/` | Per-seat prompts with strict information isolation, a custom sampler implementing the illegal-action policy, JSONL logging, aggregate stats, ratings, round-robin tournaments, CLI. |
+| Kaggle task | `kaggle_task/` | A Kaggle Benchmarks task that runs the same round-robin on Kaggle's Model Proxy, and the daily driver that launches it and merges the results. See [Kaggle Benchmarks](#kaggle-benchmarks). |
 
 `AMBIGUITIES.md` lists every rule edge case that the rules document leaves open,
 with the resolution the engine implements.
@@ -50,7 +51,7 @@ the pinned commit, change the source to
 `game_arena = { path = "vendor/game_arena", editable = true }` and re-run
 `uv sync`.
 
-Run the tests (about 5 seconds, including the 10,000-match property test):
+Run the tests (about 15 seconds, including the 10,000-match property test):
 
 ```bash
 uv run pytest
@@ -84,9 +85,13 @@ Useful flags:
 | `--num-players {2,4,6}` | Default 4. |
 | `--parallel K` | Play K matches concurrently. |
 | `--max-reprompts` | Re-prompts after an illegal reply before the random fallback. Default 1 (the benchmark rule). |
+| `--team-a-api-options '{"timeout":300}'` | OpenRouter client settings: `timeout` (seconds, default 600), `referer` and `title` (attribution headers), `include_usage` (default true; request usage and cost in the reply). |
 | `--base-url URL` | Point `OpenRouterModel` at a self-hosted OpenAI-compatible endpoint (vLLM, Ollama). |
+| `--verbose` | Print every decision as it is applied. |
+| `--no-isolation-check` | Skip the hidden-card check on every prompt (see [Auditing a prompt](#auditing-a-prompt)). For debugging only; never use it for benchmark runs. |
 
-Both teams may use the same slug; the labels get `#A` / `#B` suffixes.
+Every `--team-a-*` flag has a `--team-b-*` twin. Both teams may use the same slug; the labels
+get `#A` / `#B` suffixes.
 
 A JSON argument may also be a path to a JSON file.
 
@@ -118,9 +123,12 @@ uv run python -m runner.cli tournament --models-file models.json --seeds 100 --d
     --parallel 20 --out runs/rr [--exclude labelA/labelB] [--no-preflight]
 ```
 
-`models.json` is a list of `{"slug", "label", "provider", "model_options"}`
-objects (`"slug": "random"` or `"slug": "heuristic"` for the bots). A
-one-request preflight per model (skipped for the bots) runs first. The report (`tournament.json` and the printed table) has standings
+`models.json` is a list of `{"slug", "label", "provider", "model_options",
+"api_options", "base_url"}` objects; only `slug` is required (`"slug": "random"`
+or `"slug": "heuristic"` for the bots). `--start-seed`, `--num-players`,
+`--parallel` and `--max-reprompts` work as in `run`, and `--max-reprompts`
+applies to every model. `--no-resume` replays matches that already have a
+summary. A one-request preflight per model (skipped for the bots) runs first. The report (`tournament.json` and the printed table) has standings
 over all matches with Bradley–Terry Elo ratings and bootstrap confidence intervals
 (see [Ratings](#ratings)), and a head-to-head win-rate matrix. `tournament.json`
 also records the code version that produced it.
@@ -198,9 +206,14 @@ Every `prompt` event in `transcript.jsonl` can be paired with the `match_config`
 event (which gives the seat's slug, pinned provider and model options) and its
 `response` event (which gives the provider that actually served it). The prompt
 text contains only the rendering of `TrucoMatch.observation(seat)` plus the
-legal action list; the runner re-checks every prompt against
-`TrucoMatch.hidden_cards(seat)` before it is sent and raises if a hidden card
-appears. `tests/test_runner_match.py::test_every_prompt_is_information_isolated`
+legal action list. The runner checks every prompt against
+`TrucoMatch.hidden_cards(seat)` and raises `IsolationViolation` if a hidden
+card appears (public talk and the model's own quoted reply are redacted first).
+The check runs once the seat's decision returns, so a leaking prompt has
+already been sent to the model; what it guarantees is that the match stops
+before that prompt is logged or its action applied, and is recorded as a
+failure (a `match_error` event, no `summary.json`) that no aggregate counts.
+`tests/test_runner_match.py::test_every_prompt_is_information_isolated`
 replays a transcript alongside a fresh engine and greps every prompt the same way.
 
 Prompts are stateless single turns (system instruction = the rules text minus
@@ -214,6 +227,53 @@ re-prompted once with its own
 previous reply quoted and the legal list repeated; a second illegal reply is
 replaced by a uniformly random legal action drawn from the engine's
 seed-derived fallback stream.
+
+## Kaggle Benchmarks
+
+The same round-robin also runs as a Kaggle Benchmarks task, on models served by
+Kaggle's Model Proxy and paid from its free daily quota.
+
+* **Model layer.** `kbench_model.py` (`KbenchModel`, kind `kbench`) calls the
+  proxy and reports its cost in USD in the same `usage.cost` / `provider` shape
+  as OpenRouter, so stats and cost columns work unchanged.
+* **Task.** `kaggle_task/truco_cheap_rr.py` is a task template: every pairing
+  of the models in `MODELS` (cheap proxy models plus the heuristic) over
+  `SEEDS`, each with its duplicate. `kbench_task.quick_preflight` drops a model
+  that fails a short probe (for example HTTP 429 "heavy load") instead of
+  stalling on the harness's hour-long retry. `kbench_task.Budget` stops
+  starting matches at `BUDGET_USD`, admitting each original/duplicate pair as a
+  unit (see [Round-robin tournaments](#round-robin-tournaments)). Outputs go to
+  `truco_runs/` and `tournament.json`.
+* **Code on Kaggle.** A task does not see this working tree. It installs the
+  wheels in the `lfpmb1/truco-eval-wheels` dataset: this project's wheel
+  (`uv build --wheel`) and the pinned `game_arena` commit (`pip wheel --no-deps`),
+  built into `kaggle_task/dataset/`. A change to `truco/`, `runner/` or the
+  model layers reaches Kaggle only after the wheels are rebuilt and a new
+  dataset version is pushed. Every output records `code_version`
+  (`source_sha256` of the packaged files), which tells batches built from
+  different code apart.
+* **Daily driver.** `kaggle_task/daily.py` is meant to run every 30 minutes
+  from a scheduler. Each invocation collects a finished run into
+  `runs/kaggle_cheap_rr_v<N>/`, rebuilds the merged leaderboard
+  (`runs/kaggle_cheap_rr_leaderboard.txt` and
+  `runs/kaggle_cheap_rr_merged_tournament.json`: complete orig+dup pairs only,
+  a later run's copy of a match supersedes an earlier one, and exclusions are
+  listed), and, once the rolling daily quota has refilled, renders the template
+  with the next seeds and pushes it. Unfinished seeds are retried from a
+  bounded queue. State lives in `runs/kaggle_daily/state.json`; the job pauses
+  itself after two consecutive failed runs.
+
+```bash
+uv run python kaggle_task/daily.py --dry-run  # read Kaggle status and logs only
+uv run python kaggle_task/daily.py --merge    # only rebuild the merged leaderboard
+# Zero-cost local run of the task with bots in place of the proxy models; it writes
+# into the current directory, so start from a scratch directory:
+TRUCO_DRY_RUN=1 uv run --project /path/to/truco-eval python /path/to/truco-eval/kaggle_task/truco_cheap_rr.py
+```
+
+`kaggle` and `kaggle-benchmarks` are dev dependencies, so the Kaggle CLI is
+`uv run kaggle b ...`. Pushing a task (`kaggle b t push`, or `daily.py` with no
+flag) runs it at once and spends proxy quota.
 
 ## Reproducibility
 

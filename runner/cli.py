@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(f"--team-{t}-options", help="JSON dict or path: temperature, top_p, top_k, max_tokens, reasoning, ...")
     run.add_argument(f"--team-{t}-provider", help='JSON dict or path, e.g. {"order":["DeepInfra"],"allow_fallbacks":false}')
     run.add_argument(f"--team-{t}-label", help="display label for aggregate stats")
-    run.add_argument(f"--team-{t}-api-options", help="JSON dict: timeout, referer, title")
+    run.add_argument(f"--team-{t}-api-options", help="JSON dict or path: timeout, referer, title, include_usage")
   run.add_argument("--num-players", type=int, default=4, choices=(2, 4, 6))
   run.add_argument("--seeds", type=int, default=1, help="number of seeds to play")
   run.add_argument("--start-seed", type=int, default=0)
@@ -69,7 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
 
   tr = sub.add_parser("tournament", help="round-robin: every pairing of the given models")
   tr.add_argument("--models-file", required=True,
-                  help='JSON list of {"slug","label","provider","model_options"} (slug "random" or "heuristic" for a bot)')
+                  help='JSON list of {"slug","label","provider","model_options","api_options","base_url"} '
+                       '(slug "random" or "heuristic" for a bot)')
   tr.add_argument("--seeds", type=int, default=100)
   tr.add_argument("--start-seed", type=int, default=0)
   tr.add_argument("--duplicate", action=argparse.BooleanOptionalAction, default=True)
