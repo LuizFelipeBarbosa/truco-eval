@@ -5,8 +5,7 @@ import time
 
 import pytest
 
-from runner import ratings
-from runner import tournament
+from runner import ratings, tournament
 from runner.config import ModelConfig
 
 

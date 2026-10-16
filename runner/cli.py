@@ -18,7 +18,7 @@ import traceback
 from typing import Any
 
 from runner import stats as truco_stats
-from runner.config import KIND_HEURISTIC, KIND_OPENROUTER, KIND_RANDOM, ModelConfig
+from runner.config import ModelConfig
 from runner.match_runner import make_spec, play_match
 from runner.replay import replay_file
 
@@ -35,15 +35,11 @@ def _json_arg(text: str | None) -> dict[str, Any] | None:
 def model_config_from_args(slug: str, options: str | None, provider: str | None,
                            label: str | None, base_url: str | None,
                            max_reprompts: int, api_options: str | None) -> ModelConfig:
-  if slug.lower() == "random":
-    return ModelConfig(kind=KIND_RANDOM, label=label or "random", max_reprompts=max_reprompts)
-  if slug.lower() == "heuristic":
-    return ModelConfig(kind=KIND_HEURISTIC, label=label or "heuristic", max_reprompts=max_reprompts)
-  return ModelConfig(
-      kind=KIND_OPENROUTER, slug=slug, model_options=_json_arg(options) or {},
-      provider=_json_arg(provider), label=label or "", base_url=base_url,
-      max_reprompts=max_reprompts, api_options=_json_arg(api_options) or {},
-  )
+  """Build one team's config from the ``run`` flags (JSON flags may be file paths)."""
+  return ModelConfig.from_entry({
+      "slug": slug, "label": label, "base_url": base_url, "provider": _json_arg(provider),
+      "model_options": _json_arg(options), "api_options": _json_arg(api_options),
+  }, max_reprompts=max_reprompts)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,20 +152,7 @@ def cmd_tournament(args: argparse.Namespace) -> int:
 
   with open(args.models_file, encoding="utf-8") as f:
     entries = json.load(f)
-  models = []
-  for e in entries:
-    slug = e["slug"]
-    if slug.lower() == "random":
-      models.append(ModelConfig(kind=KIND_RANDOM, label=e.get("label", "random"),
-                                max_reprompts=args.max_reprompts))
-    elif slug.lower() == "heuristic":
-      models.append(ModelConfig(kind=KIND_HEURISTIC, label=e.get("label", "heuristic"),
-                                max_reprompts=args.max_reprompts))
-    else:
-      models.append(ModelConfig(kind=KIND_OPENROUTER, slug=slug, label=e.get("label", ""),
-                                provider=e.get("provider"), model_options=e.get("model_options", {}),
-                                api_options=e.get("api_options", {}), base_url=e.get("base_url"),
-                                max_reprompts=args.max_reprompts))
+  models = [ModelConfig.from_entry(e, max_reprompts=args.max_reprompts) for e in entries]
   exclude = []
   for item in args.exclude:
     if "/" not in item:

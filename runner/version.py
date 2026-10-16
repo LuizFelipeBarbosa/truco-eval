@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import hashlib
 import importlib.metadata
 import json
 import os
 import subprocess
-from functools import lru_cache
 from typing import Any
 
 import runner
 
-PACKAGE_FILES = ("truco", "runner", "openrouter_model.py", "kbench_model.py")
+PACKAGE_FILES = ("truco", "runner", "model_common.py", "openrouter_model.py", "kbench_model.py")
 
 
 def source_sha256(root: str) -> str:

@@ -35,6 +35,8 @@ import math
 import random
 from typing import Any, Iterable, Sequence
 
+from truco.match import TEAMS
+
 PRIOR_PSEUDO_WINS = 0.5
 ELO_PER_LOG = 400.0 / math.log(10.0)
 DEFAULT_RESAMPLES = 1000
@@ -49,7 +51,7 @@ Pair = tuple[str, str]
 # ------------------------------------------------------------------- units
 
 def _team_of(summary: dict[str, Any], label: str) -> str:
-  teams = [t for t in ("A", "B") if summary["team_config"][t]["display"] == label]
+  teams = [t for t in TEAMS if summary["team_config"][t]["display"] == label]
   if len(teams) != 1:
     raise ValueError(f"label {label!r} must fill exactly one team in match "
                      f"{summary.get('match_id')!r}")
@@ -64,7 +66,7 @@ def build_units(summaries: Iterable[dict[str, Any]]) -> dict[Pair, list[dict[str
   """
   grouped: dict[tuple[str, str, int], list[dict[str, Any]]] = collections.defaultdict(list)
   for s in summaries:
-    x, y = sorted((s["team_config"]["A"]["display"], s["team_config"]["B"]["display"]))
+    x, y = sorted(s["team_config"][t]["display"] for t in TEAMS)
     if x == y:
       raise ValueError(f"both teams have label {x!r} in match {s.get('match_id')!r}")
     tx, ty = _team_of(s, x), _team_of(s, y)

@@ -9,9 +9,6 @@ RANKS: tuple[str, ...] = ("4", "5", "6", "7", "Q", "J", "K", "A", "2", "3")
 # Suits in ascending manilha strength: ♦ < ♠ < ♥ < ♣ (§4.1).
 SUITS: tuple[str, ...] = ("♦", "♠", "♥", "♣")
 
-SUIT_NAMES = {"♣": "clubs", "♥": "hearts", "♠": "spades", "♦": "diamonds"}
-SUIT_ASCII = {"♣": "C", "♥": "H", "♠": "S", "♦": "D"}
-
 _MANILHA_BASE = 100
 
 

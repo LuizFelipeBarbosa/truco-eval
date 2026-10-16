@@ -135,11 +135,15 @@ def played_seeds(directory: str) -> set[int]:
 
   An orphan half is not seat-fair, so it neither completes its seed nor makes a run count as ok.
   """
-  halves: dict[tuple[str, int], set[str]] = {}
+  from runner.config import parse_match_id  # pylint: disable=import-outside-toplevel
+
+  halves: dict[tuple[str, int], set[bool]] = {}
   for f in glob.glob(os.path.join(directory, "truco_runs", "*", "*", "summary.json")):
-    if m := re.search(r"/([^/]+)/seed(\d+)_(orig|dup)/summary\.json$", f):
-      halves.setdefault((m.group(1), int(m.group(2))), set()).add(m.group(3))
-  return {seed for (_, seed), kinds in halves.items() if kinds == {"orig", "dup"}}
+    match_dir = os.path.dirname(f)
+    if parsed := parse_match_id(os.path.basename(match_dir)):
+      seed, swap = parsed
+      halves.setdefault((os.path.basename(os.path.dirname(match_dir)), seed), set()).add(swap)
+  return {seed for (_, seed), swaps in halves.items() if swaps == {False, True}}
 
 
 def load_report(directory: str) -> dict[str, Any] | None:
@@ -169,6 +173,7 @@ def classify_seeds(directory: str, report: dict[str, Any] | None,
   predate that key and report them as ``failures`` prefixed ``BudgetExhausted: ``.
   """
   from runner import kbench_task  # pylint: disable=import-outside-toplevel
+  from runner.config import parse_match_id  # pylint: disable=import-outside-toplevel
 
   played = played_seeds(directory)
   cap_refused: set[int] = set()
@@ -177,14 +182,14 @@ def classify_seeds(directory: str, report: dict[str, Any] | None,
     entries = [(entry, entry.get("reason", "")) for entry in report.get("skipped") or []]
     entries += [(entry, entry.get("error", "")) for entry in report.get("failures") or []]
     for entry, message in entries:
-      if m := re.fullmatch(r"seed(\d+)_(?:orig|dup)", str(entry.get("match_id", ""))):
+      if parsed := parse_match_id(str(entry.get("match_id", ""))):
         target = cap_refused if kbench_task.is_cap_refusal(str(message)) else other_failed
-        target.add(int(m.group(1)))
+        target.add(parsed[0])
   started = set()
   for match_dir in glob.glob(os.path.join(directory, "truco_runs", "*", "seed*_*")):
-    m = re.fullmatch(r"seed(\d+)_(?:orig|dup)", os.path.basename(match_dir))
-    if m and os.path.isdir(match_dir):
-      started.add(int(m.group(1)))
+    parsed = parse_match_id(os.path.basename(match_dir))
+    if parsed and os.path.isdir(match_dir):
+      started.add(parsed[0])
   kinds = {}
   for seed in seeds:
     if seed in played and seed not in cap_refused:
@@ -337,7 +342,7 @@ def now_iso() -> str:
 def merge_all(runs_root: str | None = None) -> dict[str, Any]:
   """Merge runs; later copies win, only complete pairs count, and exclusions are reported."""
   from runner import tournament  # pylint: disable=import-outside-toplevel
-  from runner.config import ModelConfig  # pylint: disable=import-outside-toplevel
+  from runner.config import ModelConfig, parse_match_id  # pylint: disable=import-outside-toplevel
 
   root = RUNS if runs_root is None else runs_root
 
@@ -373,20 +378,24 @@ def merge_all(runs_root: str | None = None) -> dict[str, Any]:
       with open(summary_path, encoding="utf-8") as summary_file:
         merged[key] = json.load(summary_file)
       sources[key] = run_name
+  # Directory names that are not match ids count as unpaired, so they are reported, not merged.
+  seeds = {key: parse_match_id(key[1]) for key in merged}
   halves = collections.defaultdict(set)
-  for pairing, match_id in merged:
-    seed, half = match_id.split("_")
-    halves[(pairing, seed)].add(half)
-  balanced = [s for (pairing, match_id), s in merged.items()
-              if halves[(pairing, match_id.split("_")[0])] == {"orig", "dup"}]
+  for (pairing, _), parsed in seeds.items():
+    if parsed:
+      halves[(pairing, parsed[0])].add(parsed[1])
+
+  def paired(key: tuple[str, str]) -> bool:
+    return seeds[key] is not None and halves[(key[0], seeds[key][0])] == {False, True}
+
+  balanced = [s for key, s in merged.items() if paired(key)]
   unpaired_excluded = [
       {"pairing": pairing, "match_id": match_id, "run": sources[(pairing, match_id)]}
-      for pairing, match_id in merged
-      if halves[(pairing, match_id.split("_")[0])] != {"orig", "dup"}
+      for pairing, match_id in merged if not paired((pairing, match_id))
   ]
   superseded.sort(key=lambda item: (item["pairing"], item["match_id"], item["dropped"]))
   unpaired_excluded.sort(key=lambda item: (item["pairing"], item["match_id"], item["run"]))
-  configs = [ModelConfig(**{k: v for k, v in m.items() if k != "display"}) for m in models.values()]
+  configs = [ModelConfig.from_entry(m) for m in models.values()]
   report = tournament.build_report(configs, balanced)
   report["superseded"] = superseded
   report["unpaired_excluded"] = unpaired_excluded

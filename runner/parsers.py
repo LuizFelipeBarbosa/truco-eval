@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 from game_arena.harness import parsers
 
 from truco import cards as C
+from truco.match import RAISE_NAME_BY_VALUE, next_stake
 
 _FINAL_ANSWER_RE = re.compile(r"final\s*answer\s*[:\-–]?", re.IGNORECASE)
 _TALK_RE = re.compile(r"^[\s>*_#\-]*talk[ \t*_]*:[ \t*_]*(.*?)\s*$", re.IGNORECASE | re.MULTILINE)
@@ -151,7 +152,7 @@ def aliases_for(observation: dict, legal_actions: Sequence[str]) -> dict[str, st
   }
   call = observation.get("pending_call")
   if call and "RAISE" in legal_actions:
-    next_name = {3: "SEIS", 6: "NOVE", 9: "DOZE"}.get(int(call["value"]))
+    next_name = RAISE_NAME_BY_VALUE.get(next_stake(int(call["value"])))  # None after DOZE
     if next_name:
       aliases[next_name] = "RAISE"
       aliases["RAISE BACK"] = "RAISE"

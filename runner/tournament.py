@@ -14,9 +14,9 @@ from typing import Any, Callable, Sequence
 from runner import ratings
 from runner import stats as truco_stats
 from runner import version as truco_version
-from runner.config import KIND_HEURISTIC, KIND_RANDOM, MatchSpec, ModelConfig
-from runner.match_runner import play_match
-
+from runner.config import BOT_KINDS, KIND_HEURISTIC, MatchSpec, ModelConfig
+from runner.match_runner import make_spec, play_match
+from truco.match import TEAMS
 
 _MISSING = object()
 
@@ -66,7 +66,7 @@ def _prior_mismatches(spec: MatchSpec,
   if match_differences:
     mismatches["match"] = match_differences
   prior_teams = prior.get("team_config", {})
-  for team in ("A", "B"):
+  for team in TEAMS:
     expected = spec.config_for_team(team).to_dict()
     old = prior_teams.get(team, {}) if isinstance(prior_teams, dict) else {}
     differences = _config_mismatches(old if isinstance(old, dict) else {}, expected)
@@ -101,12 +101,10 @@ def preflight(models: Sequence[ModelConfig]) -> dict[str, str]:
 
   errors: dict[str, str] = {}
   for m in models:
-    if m.kind in (KIND_RANDOM, KIND_HEURISTIC):
+    if m.kind in BOT_KINDS:
       continue
     try:
-      agent = m.build_agent()
-      model = agent._sampler._model  # pylint: disable=protected-access
-      model.generate_with_text_input(model_generation.ModelTextInput(
+      m.build_model().generate_with_text_input(model_generation.ModelTextInput(
           prompt_text="Reply with exactly: Final Answer: FOLD"))
     except Exception as e:  # pylint: disable=broad-exception-caught
       errors[m.display] = f"{type(e).__name__}: {str(e)[:300]}"
@@ -124,10 +122,7 @@ def tournament_specs(models: Sequence[ModelConfig], *, seeds: Sequence[int], dup
     root = pairing_dir(out_root, a, b)
     for seed in seeds:
       for swap in ((False, True) if duplicate else (False,)):
-        match_id = f"seed{seed}_{'dup' if swap else 'orig'}"
-        specs.append(MatchSpec(match_id=match_id, seed=seed, num_players=num_players,
-                               team_a=a, team_b=b, swap=swap,
-                               out_dir=os.path.join(root, match_id)))
+        specs.append(make_spec(seed, a, b, num_players=num_players, swap=swap, out_root=root))
   return specs
 
 
@@ -233,7 +228,7 @@ def build_report(models: Sequence[ModelConfig], summaries: list[dict[str, Any]],
                  failures: list[dict[str, str]] | None = None,
                  skipped: list[dict[str, str]] | None = None) -> dict[str, Any]:
   labels = [m.display for m in models]
-  extra = {s["team_config"][t]["display"] for s in summaries for t in ("A", "B")} - set(labels)
+  extra = {s["team_config"][t]["display"] for s in summaries for t in TEAMS} - set(labels)
   labels.extend(sorted(extra))
   anchor = next((m.display for m in models if m.kind == KIND_HEURISTIC), None)
   rat = ratings.compute_ratings(summaries, labels, anchor=anchor)

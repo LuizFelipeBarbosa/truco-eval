@@ -60,13 +60,13 @@ def quick_preflight(models: Sequence[ModelConfig], *, attempts: int = 4,
 
   def probe(m: ModelConfig) -> str | None:
     try:
-      model = m.build_agent()._sampler._model  # pylint: disable=protected-access
+      model = m.build_model()
     except Exception as e:  # pylint: disable=broad-exception-caught
       return f"{type(e).__name__}: {str(e)[:3000]}"  # long: lists the available models
     last: Exception | None = None
     for attempt in range(attempts):
       try:
-        model._generate(_PROBE, None)  # pylint: disable=protected-access  (undecorated: no harness retry)
+        model.generate_text_once(_PROBE)  # no harness retry: this loop is the retry budget
         return None
       except model_generation.DoNotRetryError as e:
         return f"{type(e).__name__}: {str(e)[:300]}"

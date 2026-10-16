@@ -1,17 +1,16 @@
 """Kaggle Benchmarks helpers: slug resolution and the tournament budget guard."""
 
+from pathlib import Path
 import random
 import runpy
 import threading
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from kbench_model import resolve_slug
-from runner import kbench_task
-from runner import tournament
+from runner import kbench_task, tournament
 from runner.config import KIND_HEURISTIC, KIND_KBENCH, KIND_RANDOM, ModelConfig
 
 AVAILABLE = ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "anthropic/claude-sonnet-5@default"]
@@ -305,6 +304,28 @@ def test_quick_preflight_skips_non_proxy_models():
                                      ModelConfig(kind=KIND_HEURISTIC)]) == {}
 
 
+def test_quick_preflight_retries_single_requests_then_reports(monkeypatch):
+  calls = []
+
+  class Flaky:
+    def generate_text_once(self, prompt_text):
+      calls.append(prompt_text)
+      if len(calls) < 2:
+        raise RuntimeError("heavy load")
+
+  class Down:
+    def generate_text_once(self, prompt_text):
+      raise RuntimeError("still down")
+
+  models = {"flaky": Flaky(), "down": Down()}
+  monkeypatch.setattr(ModelConfig, "build_model", lambda self: models[self.label])
+  errors = kbench_task.quick_preflight(
+      [ModelConfig(kind=KIND_KBENCH, slug="s", label=label) for label in models],
+      attempts=2, wait_secs=0)
+  assert errors == {"down": "RuntimeError: still down"}
+  assert calls == [kbench_task._PROBE] * 2
+
+
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_cheap_task_keeps_heuristic_and_returns_ratings(monkeypatch, dry_run):
   import kaggle_benchmarks as kbench
@@ -386,6 +407,7 @@ class _FailingLLM:
 
 def _kbench_model_raising(error):
   import kaggle_benchmarks as kbench
+
   from kbench_model import KbenchModel
 
   model = KbenchModel.__new__(KbenchModel)  # skip the Model Proxy lookup
@@ -408,12 +430,13 @@ def _status_error(code):
 def test_proxy_errors_propagate_in_kaggle_batch_mode(monkeypatch, code, expected):
   """Kaggle batch runs swallow exceptions inside kbench chat contexts; ours must surface."""
   import concurrent.futures
+
   from kaggle_benchmarks._config import config
 
   monkeypatch.setattr(config, "continue_with_exceptions", True)
   model = _kbench_model_raising(_status_error(code))
   with concurrent.futures.ThreadPoolExecutor(1) as ex:  # worker thread = root context
-    future = ex.submit(model._generate, "prompt", None)
+    future = ex.submit(model.generate_text_once, "prompt")
     with pytest.raises(Exception) as info:
       future.result()
   assert type(info.value).__name__ == expected

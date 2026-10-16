@@ -6,7 +6,7 @@ first to 12), built from three fixed pieces:
 | Piece | Where | What |
 |---|---|---|
 | Game engine | `truco/` | Standalone deterministic Python engine with an OpenSpiel-flavored interface. No LLM or harness imports. |
-| Model layer | `openrouter_model.py` | `OpenRouterModel`, a `game_arena.harness.model_generation.MultimodalModel` following the harness's `TogetherAIModel` pattern. |
+| Model layer | `openrouter_model.py`, `kbench_model.py`, `model_common.py` | `OpenRouterModel` (and `KbenchModel` for the Kaggle Model Proxy), `game_arena.harness.model_generation.MultimodalModel`s following the harness's `TogetherAIModel` pattern; `model_common` holds their shared token default, retry codes and cost/provider readers. |
 | Orchestrator | `runner/` | Per-seat prompts with strict information isolation, a custom sampler implementing the illegal-action policy, JSONL logging, aggregate stats, CLI. |
 
 `AMBIGUITIES.md` lists every rule edge case that the rules document leaves open,
@@ -252,9 +252,12 @@ fallback stream. Constructor extras for tests: `initial_scores={"A": 11, "B": 6}
 pyproject.toml    uv project: dependencies (harness pinned by git commit), dev group, pytest config
 uv.lock           locked environment
 truco/            cards.py (ranks, manilhas, strength), match.py (TrucoMatch, resolve_trick, hand_winner)
-openrouter_model.py
+model_common.py   policy shared by the model layers (max_tokens default, retry codes, cost/provider)
+openrouter_model.py, kbench_model.py
 runner/           rules_text.py, prompts.py, render.py, parsers.py, sampler.py, agents.py,
-                  config.py, match_log.py, match_runner.py, stats.py, replay.py, cli.py
+                  config.py, match_log.py, match_runner.py, stats.py, ratings.py, tournament.py,
+                  replay.py, kbench_task.py, version.py, cli.py
+kaggle_task/      truco_cheap_rr.py (Kaggle task template), daily.py (daily driver)
 tests/            engine, model-layer (mock HTTP server), parser, sampler, orchestrator, CLI tests
 AMBIGUITIES.md    rule edge cases and the resolutions implemented
 docs/             inside-truco-eval.html, a standalone snapshot of the explainer page

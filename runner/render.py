@@ -6,6 +6,8 @@ rendered text can never contain more than that seat is entitled to see.
 
 from __future__ import annotations
 
+from truco.match import HAND_MAO_DE_FERRO, HAND_MAO_DE_ONZE, PHASE_MAO_DE_ONZE
+
 TALK_LINES_FROM_EARLIER_HANDS = 10
 
 
@@ -28,9 +30,9 @@ def render_observation(obs: dict) -> str:
       + f"Opponents: seats {', '.join(map(str, opponents))}.",
   ]
   ht = obs["hand_type"]
-  if ht == "mao_de_onze":
+  if ht == HAND_MAO_DE_ONZE:
     lines.append("Hand type: MÃO DE ONZE (fixed stake 3, no raises allowed).")
-  elif ht == "mao_de_ferro":
+  elif ht == HAND_MAO_DE_FERRO:
     lines.append("Hand type: MÃO DE FERRO (blind hand, fixed stake 1, no raises; the winner wins the match).")
   else:
     lines.append("Hand type: normal.")
@@ -78,7 +80,7 @@ def render_observation(obs: dict) -> str:
     else:
       result = f"{_team_label(tr['winner_team'])} wins (seat {tr['winner_seat']})"
     lines.append(f"  Trick {tr['trick'] + 1} (leader seat {tr['leader']}): {plays} → {result}")
-  if not obs["terminal"] and obs["phase"] != "MAO_DE_ONZE":
+  if not obs["terminal"] and obs["phase"] != PHASE_MAO_DE_ONZE:
     cur = obs["current_trick"]
     played = ", ".join(f"seat {p['seat']} {p['card']}" for p in cur) if cur else "no cards yet"
     lines.append(

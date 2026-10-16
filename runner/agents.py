@@ -5,8 +5,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Callable, Protocol, Sequence
 
-from game_arena.harness import model_generation
-from game_arena.harness import samplers
+from game_arena.harness import model_generation, samplers
 
 from runner import render
 from runner.sampler import TrucoSampler

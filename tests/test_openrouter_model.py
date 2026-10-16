@@ -8,11 +8,11 @@ import socketserver
 import threading
 from typing import Any
 
+from game_arena.harness import model_generation
 import pytest
 import tenacity
-from game_arena.harness import model_generation
 
-import openrouter_model
+import model_common
 from openrouter_model import OpenRouterModel
 
 
@@ -132,8 +132,8 @@ def test_request_shape_and_headers(server):
 
 def test_default_max_tokens_is_high(server):
   _model(server).generate_with_text_input(model_generation.ModelTextInput(prompt_text="x"))
-  assert server.requests[0]["body"]["max_tokens"] == openrouter_model.DEFAULT_MAX_TOKENS
-  assert openrouter_model.DEFAULT_MAX_TOKENS >= 8192
+  assert server.requests[0]["body"]["max_tokens"] == model_common.DEFAULT_MAX_TOKENS
+  assert model_common.DEFAULT_MAX_TOKENS >= 8192
 
 
 def test_provider_pinning_passthrough_and_served_provider(server):
@@ -144,7 +144,7 @@ def test_provider_pinning_passthrough_and_served_provider(server):
   body = server.requests[0]["body"]
   assert body["provider"] == provider
   assert body["reasoning"] == {"effort": "low"}
-  assert openrouter_model.served_provider(out) == "DeepInfra"
+  assert model_common.served_provider(out) == "DeepInfra"
 
 
 def test_retry_on_5xx_then_success(server):
@@ -189,7 +189,7 @@ def test_token_usage_and_cost_capture(server):
   assert out.generation_tokens == 250
   assert out.total_tokens == 1250
   assert out.reasoning_tokens == 12
-  assert openrouter_model.served_cost(out) == pytest.approx(0.00042)
+  assert model_common.served_cost(out) == pytest.approx(0.00042)
 
 
 def test_reasoning_capture(server):

@@ -4,7 +4,16 @@ Every template ends with a ``{rethink_prompt}`` slot (empty on the first
 attempt) exactly like ``prompt_templates.*_RETHINK_APPENDED`` in the harness.
 """
 
+from __future__ import annotations
+
 from runner.rules_text import RULES_FOR_MODELS
+from truco.match import (
+    HAND_MAO_DE_FERRO,
+    PHASE_MAO_DE_ONZE,
+    PHASE_RAISE_RESPONSE,
+    RAISE_NAMES,
+    RAISE_VALUE_BY_NAME,
+)
 
 SYSTEM_INSTRUCTION = (
     "You are playing the card game Truco Paulista in a benchmark. You control one seat. "
@@ -82,11 +91,11 @@ TEMPLATE_BY_DECISION_TYPE = {
 
 def decision_type_for(observation: dict) -> str:
   phase = observation["phase"]
-  if phase == "MAO_DE_ONZE":
+  if phase == PHASE_MAO_DE_ONZE:
     return DECISION_TYPE_MAO_DE_ONZE
-  if phase == "RAISE_RESPONSE":
+  if phase == PHASE_RAISE_RESPONSE:
     return DECISION_TYPE_RAISE_RESPONSE
-  if observation["hand_type"] == "mao_de_ferro":
+  if observation["hand_type"] == HAND_MAO_DE_FERRO:
     return DECISION_TYPE_MAO_DE_FERRO
   return DECISION_TYPE_CARD_PLAY
 
@@ -103,10 +112,10 @@ def prompt_substitutions(observation: dict, legal_actions, readable_state_str: s
       "team": observation["team"],
       "legal_actions": format_legal_actions(legal_actions),
   }
-  raise_names = [a for a in legal_actions if a in ("TRUCO", "SEIS", "NOVE", "DOZE")]
+  raise_names = [a for a in legal_actions if a in RAISE_NAMES]
   subs["raise_clause"] = (
       f", call {raise_names[0]} (raise the stake to "
-      f"{ {'TRUCO': 3, 'SEIS': 6, 'NOVE': 9, 'DOZE': 12}[raise_names[0]] })"
+      f"{RAISE_VALUE_BY_NAME[raise_names[0]]})"
       if raise_names else ""
   )
   call = observation.get("pending_call")
