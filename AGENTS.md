@@ -12,7 +12,7 @@ three layers, and dependencies only point downward:
 | Layer | Files | May import |
 |---|---|---|
 | Engine | `truco/cards.py`, `truco/match.py` | stdlib only |
-| Model layers | `openrouter_model.py` (OpenRouter), `kbench_model.py` (Kaggle Model Proxy) | `game_arena` harness, `requests` |
+| Model layers | `model_common.py` (shared policy), `openrouter_model.py` (OpenRouter), `kbench_model.py` (Kaggle Model Proxy) | `game_arena` harness, `requests`, `model_common` |
 | Orchestrator | `runner/` | `truco`, model layers, harness |
 | Kaggle tasks and ops | `kaggle_task/` | `runner` (installed from wheels on Kaggle) |
 
@@ -21,8 +21,8 @@ three layers, and dependencies only point downward:
 - `rules_text`, `prompts`, `render`: what a seat is told.
 - `parsers`, `sampler`, `agents`: how a reply becomes an action, including re-prompts and the random fallback.
 - `heuristic`: the deterministic baseline bot.
-- `config`: `ModelConfig` and `MatchSpec`.
-- `match_runner`, `match_log`, `usage`: the match loop, per-match stats and output files; `usage` reads cost and provider without importing a model layer.
+- `config`: `ModelConfig` (built from loose settings only through `ModelConfig.from_entry`, turned into a harness model only through `build_model`), `MatchSpec`, and `match_id` / `parse_match_id`.
+- `match_runner`, `match_log`: the match loop, per-match stats and output files. Cost and provider come from `model_common.served_cost` / `served_provider`, which serve both model layers.
 - `stats`, `ratings`, `tournament`: aggregates, Bradley–Terry ratings and round-robins.
 - `replay`: re-drives a logged match.
 - `kbench_task`: Kaggle preflight and budget.
@@ -39,6 +39,7 @@ Always go through `uv`. The system `python3` is too old, and bare `python` is no
 uv sync                                   # install, including dev tools
 uv run pytest                             # full suite, about 15 s, no network
 uv run pytest tests/test_ratings.py -k anchor   # one area
+uv run ruff check .                       # lint: pyflakes, core pycodestyle, import order
 
 # Free end-to-end check: bots only, no API key, no cost
 uv run python -m runner.cli run --team-a heuristic --team-b random --seeds 2 --out /tmp/truco-smoke
@@ -53,8 +54,9 @@ REPO=$PWD; mkdir -p /tmp/truco-kaggle-dry && cd /tmp/truco-kaggle-dry && \
   TRUCO_DRY_RUN=1 uv run --project "$REPO" python "$REPO/kaggle_task/truco_cheap_rr.py"
 ```
 
-No linter or formatter is configured. Match the surrounding style by hand (see
-"Code conventions").
+`ruff check` is the linter (`[tool.ruff]` in `pyproject.toml`); keep it clean. No
+formatter is adopted: `ruff format` would rewrite almost every file, so don't run it.
+Match the surrounding layout by hand (see "Code conventions").
 
 ## Invariants: break these and published results stop meaning anything
 
@@ -81,7 +83,7 @@ Some files define the benchmark itself, not just the code that runs it:
 - `runner/rules_text.py`, `prompts.py`, `render.py`: the system instruction and observation text
 - `runner/parsers.py`, `sampler.py`: what counts as a legal reply
 - `runner/heuristic.py`: its thresholds are the rating anchor
-- model defaults (`DEFAULT_MAX_TOKENS = 16384`, retry policy)
+- model defaults in `model_common.py` (`DEFAULT_MAX_TOKENS = 16384`, the non-retryable 4xx codes, reasoning-text handling)
 - stat or rating definitions in `stats.py` and `ratings.py`
 
 A change to any of these is a new benchmark version. Results produced before and
@@ -106,14 +108,15 @@ way to tell versions apart, so keep these changes in commits of their own.
 
 **CLI flag**
 - `runner/cli.py:build_parser` → `cmd_run` / `cmd_tournament`.
-- A per-model flag must also go through `model_config_from_args` and the models-file loop in `cmd_tournament`.
+- A per-model setting goes through `ModelConfig.from_entry`, which both `model_config_from_args` (`run`) and the `cmd_tournament` models file use.
 - Update the README flags table.
 - Add a `cli.main([...])` test that uses the random or heuristic bots.
 
 **Model kind**
-- Add `KIND_X` in `runner/config.py`, and a branch in `ModelConfig.build_agent` that lazy-imports any SDK.
-- Update both CLI constructors and the preflight skip lists (`tournament.preflight`, `kbench_task.quick_preflight`).
-- The model class subclasses the harness `MultimodalModel`. Its `response_for_logging` must include `provider` and `usage.cost` (USD), or cost shows as n/a.
+- Add `KIND_X` in `runner/config.py`, a branch in `ModelConfig.build_model` that lazy-imports the model layer, and the kind in `build_agent`'s LLM check.
+- Update `ModelConfig.from_entry` if the kind can come from a slug, and the preflight filters (`tournament.preflight`, `kbench_task.quick_preflight`).
+- The model class subclasses the harness `MultimodalModel` and takes the token default, retry codes and `split_thoughts` from `model_common`. It defines `_generate(content, system_instruction)` and `generate_text_once(prompt_text, system_instruction=None)` (one request, no harness retry; the preflights call it). Its `response_for_logging` must include `provider` and `usage.cost` (USD), or cost shows as n/a.
+- A new top-level module must be added to both `[tool.hatch.build.targets.wheel] only-include` and `runner.version.PACKAGE_FILES` (a test checks they match).
 
 **Per-match stat**
 - `match_runner._new_stats` and `_tally` → `stats._SUM_KEYS` → a rate in `stats.aggregate` via `_rate`, which returns `None` on a zero denominator.
@@ -135,7 +138,7 @@ way to tell versions apart, so keep these changes in commits of their own.
 - **Layout:** 2-space indentation, 4-space hanging continuation (Google/pyink style, as in `game_arena`), about 100 columns, double quotes.
 - **Imports:**
   - Put `from __future__ import annotations` at the top of every module.
-  - Use absolute imports only.
+  - Use absolute imports only, in one alphabetical block per section (stdlib, third-party, first-party) as `ruff check` sorts them.
   - Alias a module when its name collides with a harness module: `from runner import agents as truco_agents`, `from truco import cards as C`.
   - Lazy-import optional SDKs inside the function, with `# pylint: disable=import-outside-toplevel`.
 - **Typing:**
@@ -151,7 +154,8 @@ way to tell versions apart, so keep these changes in commits of their own.
   - `slug` is the provider's model id.
   - `swap=True` marks the duplicate match, and `match_id` is `seed{N}_{orig|dup}`.
   - Actions are exact uppercase strings (`PLAY Q♠`, `TRUCO`, `ACCEPT`, `MAO_PLAY`, `FOLD`).
-  - Import raise names, phases and hand types from `truco.match` instead of retyping the literals. Some older modules still retype them; don't add more.
+  - Import raise names (`RAISE_NAMES`, `RAISE_VALUE_BY_NAME`), phases, hand types and team letters (`TEAMS`, `team_of`, `other_team`) from `truco.match` instead of retyping the literals.
+  - Build match ids with `runner.config.match_id` and read them with `parse_match_id`, never by formatting or splitting strings.
 - **Docstrings:**
   - Every module starts with a docstring that states its purpose and the policy it implements; `heuristic.py` and `ratings.py` are the models to follow.
   - Functions get a one-line summary, with ``double backticks`` for code.
@@ -162,7 +166,7 @@ way to tell versions apart, so keep these changes in commits of their own.
   - Catch broad exceptions only at per-match or per-model boundaries, and record them as `f"{type(e).__name__}: {e}"`.
 - **I/O:**
   - Use `os.path` (not pathlib) and `open(..., encoding="utf-8")`.
-  - Write JSONL with `sort_keys=True, ensure_ascii=False, separators=(",", ":")`, and readable JSON with `indent=2, sort_keys=True, ensure_ascii=False`.
+  - Write event JSONL with `truco.match.canonical_json` (replay compares its bytes with old runs), and readable JSON with `indent=2, sort_keys=True, ensure_ascii=False`.
   - Progress output is `print(..., flush=True)`.
 - **Tests:**
   - Write plain pytest functions named `test_<behavior>`.
@@ -194,9 +198,8 @@ way to tell versions apart, so keep these changes in commits of their own.
 - The body explains why, and lists any behavior or benchmark change.
 - Leave unrelated working-tree changes alone.
 
-## Known issues (as of 2026-10-05)
+## Known issues (as of 2026-10-10)
 
 Fix these on purpose, not as a side effect of other work:
 
 - Isolation is checked after the model replies, not before the prompt is sent (the README says "before").
-- `kaggle_task/truco_pilot.py` is stale and has no tests.

@@ -31,6 +31,7 @@ TEAMS = ("A", "B")
 LADDER = (1, 3, 6, 9, 12)
 RAISE_NAME_BY_VALUE = {3: "TRUCO", 6: "SEIS", 9: "NOVE", 12: "DOZE"}
 RAISE_VALUE_BY_NAME = {v: k for k, v in RAISE_NAME_BY_VALUE.items()}
+RAISE_NAMES = tuple(RAISE_NAME_BY_VALUE.values())  # ladder order: TRUCO, SEIS, NOVE, DOZE
 TALK_MAX_CHARS = 200
 
 PHASE_MAO_DE_ONZE = "MAO_DE_ONZE"
@@ -45,6 +46,15 @@ HAND_MAO_DE_FERRO = "mao_de_ferro"
 
 class IllegalActionError(ValueError):
   """Raised when ``apply_action`` is given a seat/action that is not legal."""
+
+
+def canonical_json(obj: Any) -> str:
+  """The one JSON encoding of logged events: sorted keys, raw UTF-8, no spaces.
+
+  ``engine_events.jsonl`` and the transcript use it, and replay verification compares bytes,
+  so every writer of those files must go through this function.
+  """
+  return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def team_of(seat: int) -> str:
@@ -200,11 +210,7 @@ class TrucoMatch:
 
   def serialize_events(self) -> str:
     """JSON Lines, deterministic key order."""
-    return "".join(
-        json.dumps(e, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-        + "\n"
-        for e in self.events
-    )
+    return "".join(canonical_json(e) + "\n" for e in self.events)
 
   # --------------------------------------------------------------- helpers
 
@@ -607,7 +613,3 @@ class TrucoMatch:
         visible.update(cards)
     unseen_deck = set(C.make_deck()) - dealt
     return (dealt - visible) | unseen_deck
-
-  def snapshot_hands(self) -> dict[int, list[str]]:
-    """Full-information view of remaining cards (logging/replay only)."""
-    return {s: list(cs) for s, cs in self._hands.items()}

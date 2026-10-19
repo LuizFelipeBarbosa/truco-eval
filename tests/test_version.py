@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -93,7 +94,7 @@ def test_code_version_records_git_commit_and_scoped_dirty_state(tmp_path, monkey
   assert record["git_dirty"] is bool(status)
   assert calls == [
       ["git", "rev-parse", "HEAD"],
-      ["git", "status", "--porcelain", "--", "truco", "runner",
+      ["git", "status", "--porcelain", "--", "truco", "runner", "model_common.py",
        "openrouter_model.py", "kbench_model.py"],
   ]
 
@@ -151,3 +152,10 @@ def test_code_version_has_repo_source_hash_and_package_version():
   record = code_version()
   assert re.fullmatch(r"[0-9a-f]{64}", record["source_sha256"])
   assert record["packages"]["truco-eval"] is not None
+
+
+def test_package_files_match_the_wheel_contents():
+  root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+  with open(os.path.join(root, "pyproject.toml"), "rb") as f:
+    wheel = tomllib.load(f)["tool"]["hatch"]["build"]["targets"]["wheel"]
+  assert tuple(wheel["only-include"]) == truco_version.PACKAGE_FILES

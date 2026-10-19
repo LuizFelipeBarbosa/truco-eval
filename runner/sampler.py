@@ -15,13 +15,10 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Callable, Sequence
 
-from game_arena.harness import model_generation
-from game_arena.harness import parsers
-from game_arena.harness import prompt_generation
-from game_arena.harness import samplers
+from game_arena.harness import model_generation, parsers, prompt_generation, samplers
 
-from runner import prompts as truco_prompts
 from runner import parsers as truco_parsers
+from runner import prompts as truco_prompts
 
 GAME_SHORT_NAME = "truco"
 

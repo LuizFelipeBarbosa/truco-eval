@@ -8,8 +8,8 @@ chat-completions POST. Differences:
   class can point at a self-hosted vLLM / Ollama endpoint.
 * ``model_options["provider"]`` is forwarded verbatim as the OpenRouter
   ``provider`` routing object (provider pinning). The provider that actually
-  served the request is read back from the response and exposed via
-  :func:`served_provider`.
+  served the request is read back from the response
+  (``model_common.served_provider``).
 * ``model_options["reasoning"]`` is forwarded verbatim (e.g. ``{"effort":
   "high"}``); reasoning text returned by the API is captured into
   ``main_response_and_thoughts`` wrapped in ``<think>`` tags.
@@ -18,6 +18,8 @@ chat-completions POST. Differences:
 * HTTP 4xx (other than 408/429) raises ``DoNotRetryError``; everything else
   is raised as a plain exception and retried by the harness's retry decorator
   (which the base class installs through ``__init_subclass__``).
+
+The token default, retry codes and reasoning handling live in ``model_common``.
 """
 
 from __future__ import annotations
@@ -26,33 +28,16 @@ import os
 from typing import Any, Mapping, Sequence
 
 from absl import logging
-from game_arena.harness import model_generation
-from game_arena.harness import model_generation_http
+from game_arena.harness import model_generation, model_generation_http
 import requests
 
+import model_common
+
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-# High enough for reasoning models, which spend output tokens before the
-# visible answer.
-DEFAULT_MAX_TOKENS = 16384
 DEFAULT_TIMEOUT_SECS = 600
 _PASSTHROUGH_OPTIONS = ("temperature", "top_p", "top_k", "provider", "reasoning",
                         "seed", "stop", "presence_penalty", "frequency_penalty",
                         "repetition_penalty", "min_p", "top_a", "response_format")
-_RETRYABLE_4XX = (408, 429)
-
-
-def served_provider(generate_return: model_generation.GenerateReturn) -> str | None:
-  """Provider that actually served a response (from the OpenRouter body)."""
-  response = generate_return.response_for_logging or {}
-  return response.get("provider")
-
-
-def served_cost(generate_return: model_generation.GenerateReturn) -> float | None:
-  """OpenRouter-reported cost (USD) for a response, if present."""
-  response = generate_return.response_for_logging or {}
-  usage = response.get("usage") or {}
-  cost = usage.get("cost")
-  return float(cost) if cost is not None else None
 
 
 class OpenRouterModel(model_generation.MultimodalModel):
@@ -108,7 +93,7 @@ class OpenRouterModel(model_generation.MultimodalModel):
     request: dict[str, Any] = {
         "model": self._model_name,
         "messages": messages,
-        "max_tokens": int(self._model_options.get("max_tokens", DEFAULT_MAX_TOKENS)),
+        "max_tokens": model_common.max_tokens(self._model_options),
     }
     for option in _PASSTHROUGH_OPTIONS:
       if option in self._model_options:
@@ -130,7 +115,7 @@ class OpenRouterModel(model_generation.MultimodalModel):
       # Connection errors / timeouts are transient: let the harness retry.
       raise RuntimeError(f"OpenRouter request failed: {e}") from e
     status = response.status_code
-    if 400 <= status < 500 and status not in _RETRYABLE_4XX:
+    if model_common.is_non_retryable_status(status):
       raise model_generation.DoNotRetryError(
           f"OpenRouter returned HTTP {status} for model {self._model_name}",
           info=response.text[:2000],
@@ -147,7 +132,7 @@ class OpenRouterModel(model_generation.MultimodalModel):
     if "error" in completion and not completion.get("choices"):
       err = completion["error"]
       code = err.get("code") if isinstance(err, dict) else None
-      if isinstance(code, int) and 400 <= code < 500 and code not in _RETRYABLE_4XX:
+      if isinstance(code, int) and model_common.is_non_retryable_status(code):
         raise model_generation.DoNotRetryError(
             f"OpenRouter error {code} for model {self._model_name}", info=err
         )
@@ -188,16 +173,8 @@ class OpenRouterModel(model_generation.MultimodalModel):
             parts.append(str(text))
       reasoning = "\n".join(parts) or None
 
-    main_response = content_text
-    if reasoning:
-      main_response_and_thoughts = f"<think>{reasoning}</think>{content_text}"
-    else:
-      main_response_and_thoughts = content_text
-      maybe_separated = model_generation.separate_main_response_and_thoughts(
-          content_text
-      )
-      if maybe_separated is not None:
-        main_response = maybe_separated[0]
+    main_response, main_response_and_thoughts = model_common.split_thoughts(
+        content_text, reasoning)
 
     usage = completion.get("usage") or {}
     details = usage.get("completion_tokens_details") or {}
@@ -217,11 +194,16 @@ class OpenRouterModel(model_generation.MultimodalModel):
         total_tokens=usage.get("total_tokens"),
     )
 
+  def generate_text_once(
+      self, prompt_text: str, system_instruction: str | None = None
+  ) -> model_generation.GenerateReturn:
+    """One request without the harness retry that wraps ``generate_with_text_input``."""
+    return self._generate(model_common.text_content(prompt_text), system_instruction)
+
   def generate_with_text_input(
       self, model_input: model_generation.ModelTextInput
   ) -> model_generation.GenerateReturn:
-    content = [{"type": "text", "text": model_input.prompt_text}]
-    return self._generate(content, model_input.system_instruction)
+    return self.generate_text_once(model_input.prompt_text, model_input.system_instruction)
 
   def generate_with_image_text_input(
       self, model_input: model_generation.ModelImageTextInput

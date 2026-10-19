@@ -1,7 +1,7 @@
 """Rule-based extraction, talk extraction, and soft matching."""
 
-import pytest
 from game_arena.harness import parsers
+import pytest
 
 from runner.parsers import TrucoRuleParser, TrucoSoftParser, aliases_for, extract_talk, soft_match
 

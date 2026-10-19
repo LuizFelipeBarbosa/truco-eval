@@ -36,10 +36,15 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from truco import cards as C
-from truco.match import RAISE_VALUE_BY_NAME
-
 from runner.agents import Decision
+from truco import cards as C
+from truco.match import (
+    HAND_MAO_DE_FERRO,
+    PHASE_MAO_DE_ONZE,
+    PHASE_RAISE_RESPONSE,
+    RAISE_VALUE_BY_NAME,
+    other_team,
+)
 
 _RANK_VALUE = {"3": 2.0, "2": 1.5, "A": 1.0, "K": 0.5}
 _STEPS = {3: 0, 6: 1, 9: 2, 12: 3}
@@ -83,11 +88,11 @@ class HeuristicBotAgent:
 
   def _choose(self, obs: dict[str, Any], legal: Sequence[str]) -> str:
     phase = obs["phase"]
-    if phase == "MAO_DE_ONZE":
+    if phase == PHASE_MAO_DE_ONZE:
       return self._mao_de_onze(obs)
-    if phase == "RAISE_RESPONSE":
+    if phase == PHASE_RAISE_RESPONSE:
       return self._raise_response(obs, legal)
-    if obs["hand_type"] == "mao_de_ferro":
+    if obs["hand_type"] == HAND_MAO_DE_FERRO:
       return f"PLAY {min(obs['blind_positions'])}"
     return self._play(obs, legal)
 
@@ -100,7 +105,7 @@ class HeuristicBotAgent:
 
   def _raise_response(self, obs: dict[str, Any], legal: Sequence[str]) -> str:
     call = obs["pending_call"]
-    opp = "B" if obs["team"] == "A" else "A"
+    opp = other_team(obs["team"])
     if obs["scores"][opp] + call["pre_call_stake"] >= obs["target"]:
       return "ACCEPT"
     threshold = 2.5 + 0.5 * _STEPS[call["value"]]

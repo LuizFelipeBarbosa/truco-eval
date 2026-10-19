@@ -6,11 +6,7 @@ import json
 import os
 from typing import Any, TextIO
 
-from truco.match import TrucoMatch
-
-
-def _dumps(obj: Any) -> str:
-  return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+from truco.match import TrucoMatch, canonical_json
 
 
 class MatchLogger:
@@ -31,7 +27,7 @@ class MatchLogger:
   def event(self, event: dict[str, Any]) -> None:
     self.transcript_events.append(event)
     if self._transcript:
-      self._transcript.write(_dumps(event) + "\n")
+      self._transcript.write(canonical_json(event) + "\n")
 
   def replay(self, line: str = "") -> None:
     self._replay_lines.append(line)

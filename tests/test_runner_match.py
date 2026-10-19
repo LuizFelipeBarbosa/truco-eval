@@ -10,9 +10,9 @@ import sys
 import pytest
 
 from runner import agents as truco_agents
+from runner import match_runner
 from runner.config import ModelConfig
 from runner.match_log import MatchLogger
-from runner import match_runner
 from runner.match_runner import IsolationViolation, make_spec, play_match, redact_talk
 from runner.replay import replay_file
 from tests.fake_model import FakeModel
@@ -293,6 +293,7 @@ def test_reprompt_quoting_an_illegal_card_is_not_a_violation(tmp_path):
 def test_illegal_reply_that_quotes_talk_and_names_hidden_cards(tmp_path):
   """Reasoning that repeats a talk line and counts hidden cards, quoted in a re-prompt."""
   from game_arena.harness import model_generation
+
   from tests.fake_model import legal_from_prompt
   from truco import cards as C
 

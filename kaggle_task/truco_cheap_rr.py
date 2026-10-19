@@ -39,8 +39,8 @@ _ensure_truco()
 
 # %%
 import kaggle_benchmarks as kbench
-from runner import kbench_task
-from runner import tournament
+
+from runner import kbench_task, tournament
 from runner.config import KIND_HEURISTIC, KIND_KBENCH, KIND_RANDOM, ModelConfig
 
 DRY_RUN = os.environ.get("TRUCO_DRY_RUN") == "1"

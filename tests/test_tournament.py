@@ -9,8 +9,7 @@ import time
 
 import pytest
 
-from runner import cli
-from runner import tournament
+from runner import cli, tournament
 from runner.config import KIND_RANDOM, ModelConfig
 
 BOTS = [ModelConfig(kind="random", label=f"bot{i}") for i in range(3)]

@@ -10,23 +10,25 @@ matches inside a Kaggle Benchmarks task exactly as it does through
   prompt of the match.
 * The proxy reports usage and cost (nanodollars); they are exposed in
   ``response_for_logging`` in the same shape OpenRouter returns
-  (``usage.cost`` in USD, ``provider``), so ``runner.usage.served_cost`` and
+  (``usage.cost`` in USD, ``provider``), so ``model_common.served_cost`` and
   ``served_provider`` read them in the match stats.
 * ``model_options["reasoning"] = {"effort": "low"|"medium"|"high"}`` maps to
   the SDK's ``reasoning`` level. Unset means the model's default, which is
   what the OpenRouter runs used.
+
+The token default, retry codes and reasoning handling live in ``model_common``.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from game_arena.harness import model_generation
 import openai
 
+import model_common
+
 PROVIDER = "kaggle-model-proxy"
-DEFAULT_MAX_TOKENS = 16384
-_RETRYABLE_4XX = (408, 429)
 
 
 def resolve_slug(slug: str, available) -> str:
@@ -64,11 +66,15 @@ class KbenchModel(model_generation.MultimodalModel):
     # Streaming (on in interactive notebooks) drops reasoning traces.
     self._llm.stream_responses = False
 
-  def _generate(self, prompt_text: str,
-                system_instruction: str | None) -> model_generation.GenerateReturn:
-    kwargs: dict[str, Any] = {
-        "max_tokens": int(self._model_options.get("max_tokens", DEFAULT_MAX_TOKENS)),
-    }
+  def _generate(
+      self,
+      content: Sequence[Mapping[str, Any]],
+      system_instruction: str | None = None,
+  ) -> model_generation.GenerateReturn:
+    if any(part.get("type") != "text" for part in content):
+      raise model_generation.UnsupportedCapabilityError("Truco prompts are text-only.")
+    prompt_text = "".join(part["text"] for part in content)
+    kwargs: dict[str, Any] = {"max_tokens": model_common.max_tokens(self._model_options)}
     effort = (self._model_options.get("reasoning") or {}).get("effort")
     if effort:
       kwargs["reasoning"] = effort
@@ -89,21 +95,14 @@ class KbenchModel(model_generation.MultimodalModel):
       # Auth, bad-request and unknown-model errors never succeed on retry
       # (an expired proxy key would otherwise retry forever).
       if (isinstance(error, openai.APIStatusError)
-          and 400 <= error.status_code < 500 and error.status_code not in _RETRYABLE_4XX):
+          and model_common.is_non_retryable_status(error.status_code)):
         raise model_generation.DoNotRetryError(
             f"Model Proxy returned HTTP {error.status_code} for {self._model_name}",
             info=str(error)[:2000]) from error
       raise error
 
-    content = message.content or ""
-    reasoning = message.reasoning_traces
-    if reasoning:
-      main_response, with_thoughts = content, f"<think>{reasoning}</think>{content}"
-    else:
-      main_response = with_thoughts = content
-      separated = model_generation.separate_main_response_and_thoughts(content)
-      if separated is not None:
-        main_response = separated[0]
+    main_response, with_thoughts = model_common.split_thoughts(
+        message.content or "", message.reasoning_traces)
 
     usage = message.usage
     cost_nd = usage.total_cost_nanodollars
@@ -128,10 +127,16 @@ class KbenchModel(model_generation.MultimodalModel):
         total_tokens=total,
     )
 
+  def generate_text_once(
+      self, prompt_text: str, system_instruction: str | None = None
+  ) -> model_generation.GenerateReturn:
+    """One request without the harness retry that wraps ``generate_with_text_input``."""
+    return self._generate(model_common.text_content(prompt_text), system_instruction)
+
   def generate_with_text_input(
       self, model_input: model_generation.ModelTextInput
   ) -> model_generation.GenerateReturn:
-    return self._generate(model_input.prompt_text, model_input.system_instruction)
+    return self.generate_text_once(model_input.prompt_text, model_input.system_instruction)
 
   def generate_with_image_text_input(
       self, model_input: model_generation.ModelImageTextInput

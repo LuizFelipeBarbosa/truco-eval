@@ -5,6 +5,8 @@ from __future__ import annotations
 import collections
 from typing import Any, Iterable
 
+from truco.match import TEAMS, other_team
+
 _SUM_KEYS = (
     "decisions", "model_decisions", "illegal_responses", "fallbacks", "folds",
     "fold_opportunities", "raise_calls", "raise_opportunities", "responses",
@@ -22,7 +24,7 @@ def aggregate(summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
   matches = 0
   for s in summaries:
     matches += 1
-    for team in ("A", "B"):
+    for team in TEAMS:
       label = s["team_config"][team]["display"]
       agg = per.setdefault(label, {
           "matches": 0, "wins": 0, "points": 0, "net_points": 0, "hands": 0,
@@ -31,8 +33,7 @@ def aggregate(summaries: Iterable[dict[str, Any]]) -> dict[str, Any]:
       agg["matches"] += 1
       agg["wins"] += int(s["winner_team"] == team)
       agg["points"] += s["scores"][team]
-      other_team = "B" if team == "A" else "A"
-      agg["net_points"] += s["scores"][team] - s["scores"][other_team]
+      agg["net_points"] += s["scores"][team] - s["scores"][other_team(team)]
       agg["hands"] += s["hands_played"]
       ts = s["team_stats"][team]
       for k in _SUM_KEYS:

@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import collections
-import dataclasses
+import os
 from typing import Any, Mapping
 
+import model_common
 from runner import agents as truco_agents
 from runner import prompts as truco_prompts
-from runner import usage as truco_usage
 from runner import version as truco_version
-from runner.config import MatchSpec, ModelConfig
+from runner.config import MatchSpec, ModelConfig, match_id
 from runner.match_log import MatchLogger
-from truco.match import TrucoMatch, team_of
-
-RAISE_CALLS = ("TRUCO", "SEIS", "NOVE", "DOZE")
+from truco.match import RAISE_NAMES, TEAMS, TrucoMatch, team_of
 
 
 class IsolationViolation(AssertionError):
@@ -45,9 +43,9 @@ def _tally(stats: dict[str, Any], action: str, legal: list[str], decision: truco
     stats["fold_opportunities"] += 1
     if action == "FOLD":
       stats["folds"] += 1
-  if any(a in legal for a in RAISE_CALLS):
+  if any(a in legal for a in RAISE_NAMES):
     stats["raise_opportunities"] += 1
-    if action in RAISE_CALLS:
+    if action in RAISE_NAMES:
       stats["raise_calls"] += 1
   if "ACCEPT" in legal:
     stats["responses"] += 1
@@ -64,13 +62,13 @@ def _tally(stats: dict[str, Any], action: str, legal: list[str], decision: truco
     stats["completion_tokens"] += gr.generation_tokens or 0
     stats["reasoning_tokens"] += gr.reasoning_tokens or 0
     stats["generation_secs"] += gr.duration_success_only_secs or 0.0
-    cost = truco_usage.served_cost(gr)
+    cost = model_common.served_cost(gr)
     if cost is None:
       stats["cost_known"] = False
     else:
       stats["cost_responses"] += 1
       stats["cost_usd"] += cost
-    provider = truco_usage.served_provider(gr)
+    provider = model_common.served_provider(gr)
     if provider:
       stats["providers"][provider] += 1
 
@@ -78,8 +76,6 @@ def _tally(stats: dict[str, Any], action: str, legal: list[str], decision: truco
 def _finalize_stats(stats: dict[str, Any]) -> dict[str, Any]:
   out = dict(stats)
   out["providers"] = dict(stats["providers"])
-  if not stats["cost_known"] and stats["requests"] == 0:
-    out["cost_known"] = True
   return out
 
 
@@ -155,7 +151,7 @@ def play_match(
                     f"options={cfg.model_options}")
     logger.flush_engine_events(engine)
 
-    team_stats = {"A": _new_stats(), "B": _new_stats()}
+    team_stats = {t: _new_stats() for t in TEAMS}
     seat_stats = {s: _new_stats() for s in range(spec.num_players)}
 
     while not engine.is_terminal():
@@ -185,13 +181,13 @@ def play_match(
               "main_response_and_thoughts": gr.main_response_and_thoughts,
               "extracted_action": prompt["extracted_action"],
               "matched_action": prompt["matched_action"],
-              "served_provider": truco_usage.served_provider(gr),
+              "served_provider": model_common.served_provider(gr),
               "request_model": (gr.request_for_logging or {}).get("model"),
               "request_provider": (gr.request_for_logging or {}).get("provider"),
               "usage": {
                   "prompt_tokens": gr.prompt_tokens, "completion_tokens": gr.generation_tokens,
                   "reasoning_tokens": gr.reasoning_tokens, "total_tokens": gr.total_tokens,
-                  "cost_usd": truco_usage.served_cost(gr),
+                  "cost_usd": model_common.served_cost(gr),
               },
               "duration_secs": gr.duration_success_only_secs,
           })
@@ -234,7 +230,7 @@ def play_match(
         "scores": dict(engine.scores),
         "hands_played": len(engine.hand_history),
         "hand_history": engine.hand_history,
-        "team_config": {t: spec.config_for_team(t).to_dict() for t in ("A", "B")},
+        "team_config": {t: spec.config_for_team(t).to_dict() for t in TEAMS},
         "team_stats": {t: _finalize_stats(s) for t, s in team_stats.items()},
         "seat_stats": {str(s): _finalize_stats(st) for s, st in seat_stats.items()},
         "engine_event_count": len(engine.events),
@@ -267,7 +263,7 @@ def play_match(
 
 def make_spec(seed: int, team_a: ModelConfig, team_b: ModelConfig, *, num_players: int = 4,
               swap: bool = False, out_root: str | None = None) -> MatchSpec:
-  match_id = f"seed{seed}_{'dup' if swap else 'orig'}"
-  out_dir = f"{out_root}/{match_id}" if out_root else None
-  return MatchSpec(match_id=match_id, seed=seed, num_players=num_players,
+  mid = match_id(seed, swap)
+  out_dir = os.path.join(out_root, mid) if out_root else None
+  return MatchSpec(match_id=mid, seed=seed, num_players=num_players,
                    team_a=team_a, team_b=team_b, swap=swap, out_dir=out_dir)

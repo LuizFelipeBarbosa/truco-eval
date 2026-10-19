@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from truco.match import TrucoMatch
+from truco.match import TALK_MAX_CHARS, TrucoMatch, canonical_json
 
 
 def load_events(path: str) -> list[dict]:
@@ -17,8 +17,6 @@ def replay_events(events: list[dict]) -> tuple[TrucoMatch, bool]:
   start = next(e for e in events if e["type"] == "match_start")
   m = TrucoMatch(start["seed"], start["num_players"], target=start.get("target", 12),
                  initial_scores=start.get("scores"))
-  from truco.match import TALK_MAX_CHARS  # pylint: disable=import-outside-toplevel
-
   pending_truncation: dict | None = None
   for e in events:
     if e["type"] == "talk_truncated":
@@ -33,8 +31,7 @@ def replay_events(events: list[dict]) -> tuple[TrucoMatch, bool]:
       pending_truncation = None
       m.apply_action(e["seat"], e["action"], talk)
   original = "".join(
-      json.dumps({k: v for k, v in e.items() if k != "source"}, sort_keys=True,
-                 ensure_ascii=False, separators=(",", ":")) + "\n"
+      canonical_json({k: v for k, v in e.items() if k != "source"}) + "\n"
       for e in events if e.get("source", "engine") == "engine"
   )
   return m, m.serialize_events() == original
