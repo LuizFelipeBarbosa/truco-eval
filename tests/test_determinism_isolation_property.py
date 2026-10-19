@@ -1,5 +1,7 @@
 """Seeded determinism, information isolation, and the 10k-match property test."""
 
+from __future__ import annotations
+
 import json
 import random
 

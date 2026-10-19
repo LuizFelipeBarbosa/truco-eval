@@ -198,8 +198,9 @@ way to tell versions apart, so keep these changes in commits of their own.
 - The body explains why, and lists any behavior or benchmark change.
 - Leave unrelated working-tree changes alone.
 
-## Known issues (as of 2026-10-10)
+## Known issues (as of 2026-10-16)
 
 Fix these on purpose, not as a side effect of other work:
 
-- Isolation is checked after the model replies, not before the prompt is sent (the README says "before").
+- Isolation is checked after the model replies, not before the prompt is sent. A leaking prompt
+  aborts the match before it is logged, but the model has already seen it (the README says so).

@@ -1,5 +1,7 @@
 """Illegal-action policy: first -> re-prompt, second -> random legal, recorded."""
 
+from __future__ import annotations
+
 from game_arena.harness import samplers
 
 from runner import render

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 
+from game_arena.harness import model_generation
 import pytest
 
 from runner import agents as truco_agents
@@ -15,7 +16,8 @@ from runner.config import ModelConfig
 from runner.match_log import MatchLogger
 from runner.match_runner import IsolationViolation, make_spec, play_match, redact_talk
 from runner.replay import replay_file
-from tests.fake_model import FakeModel
+from tests.fake_model import FakeModel, legal_from_prompt
+from truco import cards as C
 from truco.match import TrucoMatch, team_of
 
 RANDOM_A = ModelConfig(kind="random", label="botA")
@@ -103,7 +105,8 @@ def test_every_prompt_is_information_isolated(tmp_path, seed):
 
 def test_runtime_isolation_guard_raises_on_leak():
   spec = make_spec(0, RANDOM_A, RANDOM_B)
-  leaky_agents, fa, _ = _llm_agents(0)
+  leaky_agents, _, _ = _llm_agents(0)
+  hidden = TrucoMatch(0).hidden_cards(0)
 
   class LeakyAgent:
     name = "leaky"
@@ -113,8 +116,6 @@ def test_runtime_isolation_guard_raises_on_leak():
       d.prompts[0]["prompt_text"] += " " + " ".join(sorted(hidden))
       return d
 
-  probe = TrucoMatch(0)
-  hidden = probe.hidden_cards(0)
   agents = dict(leaky_agents)
   agents[0] = LeakyAgent()
   with pytest.raises(IsolationViolation):
@@ -209,7 +210,8 @@ def test_talk_flows_from_model_to_engine_and_other_seats(tmp_path):
   talk_actions = [e for e in events if e["type"] == "action" and e.get("talk")]
   assert talk_actions
   assert talk_actions[0]["talk"] == "watch out, I'm strong!"
-  later_prompts = [e for e in events if e["type"] == "prompt" and e["i" if "i" in e else "seat"] is not None]
+  first_talk = events.index(talk_actions[0])
+  later_prompts = [e for e in events[first_talk + 1:] if e["type"] == "prompt"]
   assert any("watch out, I'm strong!" in e["prompt_text"] for e in later_prompts)
 
 
@@ -258,16 +260,13 @@ def test_seat_map_records_slug_provider_and_options(tmp_path):
 
 def test_talk_naming_hidden_cards_is_not_an_isolation_violation(tmp_path):
   """A player may bluff about any card in public talk; that is not a leak."""
-  from truco import cards as C
 
   class BluffingFakeModel(FakeModel):
     def generate_with_text_input(self, model_input):
-      legal = [l for l in __import__("tests.fake_model", fromlist=["x"]).legal_from_prompt(
-          model_input.prompt_text)]
+      legal = legal_from_prompt(model_input.prompt_text)
       all_cards = " ".join(C.make_deck())  # names every card, hidden ones included
       text = f"Talk: I hold {all_cards}\nFinal Answer: {legal[0]}"
       self.calls.append(model_input)
-      from game_arena.harness import model_generation
       return model_generation.GenerateReturn(main_response=text, main_response_and_thoughts=text)
 
   bluff = truco_agents.LLMAgent(BluffingFakeModel(), "bluffer")
@@ -292,16 +291,15 @@ def test_reprompt_quoting_an_illegal_card_is_not_a_violation(tmp_path):
 
 def test_illegal_reply_that_quotes_talk_and_names_hidden_cards(tmp_path):
   """Reasoning that repeats a talk line and counts hidden cards, quoted in a re-prompt."""
-  from game_arena.harness import model_generation
-
-  from tests.fake_model import legal_from_prompt
-  from truco import cards as C
 
   class Model(FakeModel):
     def __init__(self):
-      super().__init__(); self.n = 0
+      super().__init__()
+      self.n = 0
+
     def generate_with_text_input(self, model_input):
-      self.calls.append(model_input); self.n += 1
+      self.calls.append(model_input)
+      self.n += 1
       legal = legal_from_prompt(model_input.prompt_text)
       if self.n % 3 == 1:  # every third decision: a legal move that also talks
         text = f"Talk: partner, go low behind me and keep your best card\nFinal Answer: {legal[0]}"

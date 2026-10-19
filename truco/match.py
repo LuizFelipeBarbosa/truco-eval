@@ -596,7 +596,7 @@ class TrucoMatch:
   # ------------------------------------------------------ private inspect
 
   def hidden_cards(self, seat: int) -> set[str]:
-    """Cards that ``seat`` is NOT entitled to see right now (for tests)."""
+    """Cards that ``seat`` is NOT entitled to see right now (every prompt is checked against them)."""
     if self.is_terminal():
       return set()
     n = self.num_players

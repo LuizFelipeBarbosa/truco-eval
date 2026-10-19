@@ -1,5 +1,7 @@
 """Mão de onze (§9), mão de ferro (§9), folding (§8)."""
 
+from __future__ import annotations
+
 import pytest
 
 from tests.conftest import act, deal
